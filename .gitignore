@@ -1,0 +1,12 @@
+.env
+*.db
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.py[cod]
+.db-shm
+.db-wal
+
+git config --global user.email "muhammadzahid572@gmail.com"
+git config --global user.name "xlzorg"

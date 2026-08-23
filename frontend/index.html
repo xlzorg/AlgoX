@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AlgoBot Control Room</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #07111f; color: #dbe7f5; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .panel { background: rgba(13, 28, 48, .88); border: 1px solid rgba(116, 151, 190, .22); }
+    .muted { color: #8ca3bd; }
+    .positive { color: #48d597; }
+    .negative { color: #ff7185; }
+    .chart-shell { min-height: 360px; }
+    button:disabled { cursor: wait; opacity: .55; }
+  </style>
+</head>
+<body>
+  <div id="app" class="min-h-screen">
+    <header class="border-b border-white/10 bg-gray-800/40 px-4 py-4 shadow-lg shadow-black/20 backdrop-blur-md transition-all duration-300 md:px-8">
+      <div class="mx-auto flex max-w-7xl flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[.24em] text-cyan-300">Paper trading control room</p>
+          <h1 class="mt-1 text-2xl font-semibold tracking-tight text-white">AlgoBot</h1>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+          <label class="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/10 px-3 py-2 backdrop-blur-md transition-all duration-300 hover:border-cyan-300/50 hover:bg-white/15">
+            <span class="muted text-xs uppercase tracking-wider">Interval</span>
+            <select v-model="timeframe" @change="changeTimeframe" class="cursor-pointer rounded-md border border-white/10 bg-gray-900/70 px-2 py-1 text-white outline-none transition-all duration-300 hover:border-cyan-300/60">
+              <option v-for="option in timeframeOptions" :key="option" :value="option">{{ option }}</option>
+            </select>
+          </label>
+          <span class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-2 backdrop-blur-md">
+            <span class="h-2.5 w-2.5 rounded-full" :class="connected ? 'bg-emerald-400 shadow-[0_0_10px_#34d399]' : 'bg-rose-400'"></span>
+            {{ connected ? 'Live feed connected' : 'Feed disconnected' }}
+          </span>
+          <span class="rounded-full border border-white/10 bg-white/10 px-3 py-2 muted backdrop-blur-md">{{ engine.running ? `Running · ${formatUptime(engine.uptime_sec)}` : 'Engine stopped' }}</span>
+          <span class="rounded-full border bg-white/10 px-3 py-2 backdrop-blur-md" :class="regimeClass">{{ regime }}</span>
+          <button class="rounded-lg bg-emerald-500 px-4 py-2 font-semibold text-slate-950 transition-all duration-300 hover:bg-emerald-400 hover:shadow-lg hover:shadow-emerald-500/20" :disabled="busy || engine.running" @click="controlEngine('start')">Start</button>
+          <button class="rounded-lg bg-rose-500 px-4 py-2 font-semibold text-white transition-all duration-300 hover:bg-rose-400 hover:shadow-lg hover:shadow-rose-500/20" :disabled="busy || !engine.running" @click="controlEngine('stop')">Stop</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-7xl space-y-5 px-4 py-6 md:px-8">
+      <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <article v-for="card in summaryCards" :key="card.label" class="panel rounded-xl p-5">
+          <p class="muted text-xs font-semibold uppercase tracking-wider">{{ card.label }}</p>
+          <p class="mt-3 text-2xl font-semibold text-white">{{ card.value }}</p>
+        </article>
+      </section>
+
+      <section class="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,.75fr)]">
+        <article class="panel rounded-xl p-4">
+          <div class="mb-4 flex items-center justify-between">
+            <div>
+              <p class="text-sm font-semibold text-white">BTCUSDT · {{ timeframe }}</p>
+              <p class="muted text-xs">Closed candles and live market events</p>
+            </div>
+            <span class="muted text-xs">{{ candles.length }} candles loaded</span>
+          </div>
+          <div ref="chartHost" class="chart-shell w-full"></div>
+        </article>
+
+        <article class="panel rounded-xl p-4">
+          <div class="mb-4 flex items-center justify-between">
+            <div>
+              <p class="text-sm font-semibold text-white">Live blotter</p>
+              <p class="muted text-xs">Signals, fills, and alerts</p>
+            </div>
+            <button class="muted text-xs hover:text-white" @click="blotter = []">Clear</button>
+          </div>
+          <div class="h-[330px] space-y-2 overflow-y-auto pr-1">
+            <div v-if="!blotter.length" class="muted rounded-lg border border-dashed border-slate-700 p-5 text-center text-sm">Waiting for live events</div>
+            <div v-for="item in blotter" :key="item.id" class="rounded-lg border border-slate-700/70 bg-slate-950/40 p-3 text-xs">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold uppercase" :class="eventClass(item.type)">{{ item.type }}</span>
+                <span class="muted">{{ formatTime(item.ts) }}</span>
+              </div>
+              <pre class="mt-2 max-h-24 overflow-hidden whitespace-pre-wrap break-words text-slate-300">{{ compactPayload(item.payload) }}</pre>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel overflow-hidden rounded-xl">
+        <div class="flex items-center justify-between border-b border-slate-700/70 px-5 py-4">
+          <div>
+            <p class="text-sm font-semibold text-white">Open positions</p>
+            <p class="muted text-xs">Marked against the latest tracked prices</p>
+          </div>
+          <span class="muted text-xs">{{ positions.length }} active</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="bg-slate-950/50 text-xs uppercase tracking-wider text-slate-400">
+              <tr><th class="px-5 py-3">Symbol</th><th class="px-5 py-3">Side</th><th class="px-5 py-3">Qty</th><th class="px-5 py-3">Entry</th><th class="px-5 py-3">Current</th><th class="px-5 py-3">Floating PnL</th></tr>
+            </thead>
+            <tbody>
+              <tr v-if="!positions.length"><td colspan="6" class="muted px-5 py-8 text-center">No open positions</td></tr>
+              <tr v-for="position in positions" :key="position.position_uuid" class="border-t border-slate-800">
+                <td class="px-5 py-4 font-semibold text-white">{{ position.symbol }}</td>
+                <td class="px-5 py-4" :class="position.side === 'LONG' ? 'positive' : 'negative'">{{ position.side }}</td>
+                <td class="px-5 py-4">{{ formatNumber(position.quantity, 5) }}</td>
+                <td class="px-5 py-4">{{ formatMoney(position.entry_price) }}</td>
+                <td class="px-5 py-4">{{ formatMoney(position.current_price) }}</td>
+                <td class="px-5 py-4 font-semibold" :class="position.unrealized_pnl >= 0 ? 'positive' : 'negative'">{{ formatMoney(position.unrealized_pnl) }} ({{ formatPercent(position.pnl_pct) }})</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted, onBeforeUnmount, nextTick } = Vue;
+
+    createApp({
+      setup() {
+        const engine = ref({ running: false, uptime_sec: 0, symbols: [], active_tfs: [] });
+        const summary = ref({ balance_usdt: 0, total_equity: 0, open_positions: 0, realized_pnl_total: 0, unrealized_pnl: 0 });
+        const positions = ref([]);
+        const candles = ref([]);
+        const blotter = ref([]);
+        const connected = ref(false);
+        const busy = ref(false);
+        const timeframe = ref('1h');
+        const timeframeOptions = ['1m', '5m', '15m', '1h'];
+        const regime = ref('UNKNOWN');
+        const chartHost = ref(null);
+        let chart;
+        let candleSeries;
+        let socket;
+        let reconnectTimer;
+        let pollTimer;
+        let uptimeTimer;
+        let reconnectDelay = 1000;
+        const ENGINE_START = '/engine/start';
+        const ENGINE_STOP = '/engine/stop';
+
+        const summaryCards = computed(() => [
+          { label: 'USDT balance', value: formatMoney(summary.value.balance_usdt) },
+          { label: 'Total equity', value: formatMoney(summary.value.total_equity) },
+          { label: 'Open positions', value: String(summary.value.open_positions || 0) },
+          { label: 'Realized PnL', value: formatMoney(summary.value.realized_pnl_total) },
+        ]);
+        const regimeClass = computed(() => regime.value === 'HIGH_VOL' ? 'border-amber-400/50 text-amber-300' : regime.value.includes('UP') ? 'border-emerald-400/50 text-emerald-300' : regime.value.includes('DOWN') ? 'border-rose-400/50 text-rose-300' : 'border-cyan-400/50 text-cyan-300');
+
+        function formatNumber(value, digits = 2) { return value == null ? '--' : Number(value).toLocaleString(undefined, { maximumFractionDigits: digits }); }
+        function formatMoney(value) { return value == null ? '--' : `${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`; }
+        function formatPercent(value) { return value == null ? '--' : `${Number(value).toFixed(2)}%`; }
+        function formatTime(ts) { return ts ? new Date(Number(ts)).toLocaleTimeString() : '--'; }
+        function formatUptime(seconds) { const s = Math.floor(seconds || 0); return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`; }
+        function compactPayload(payload) { return JSON.stringify(payload || {}, null, 0); }
+        function eventClass(type) { return type === 'fill' ? 'positive' : type === 'alert' ? 'negative' : type === 'signal' ? 'text-cyan-300' : 'text-slate-300'; }
+
+        async function api(path, options) { const response = await fetch(path, options); if (!response.ok) throw new Error(`${response.status} ${path}`); return response.json(); }
+        async function refresh() {
+          try {
+            const [status, portfolio, open, candleData] = await Promise.all([
+              api('/engine/status'), api('/portfolio/summary'), api('/portfolio/positions'), api(`/market/candles?symbol=BTCUSDT&timeframe=${timeframe.value}&limit=200`)
+            ]);
+            engine.value = status;
+            summary.value = portfolio;
+            positions.value = open.items || [];
+            candles.value = candleData || [];
+            if (candles.value.length) updateChart(candles.value);
+          } catch (error) { console.warn('Dashboard refresh failed:', error); }
+        }
+        async function controlEngine(action) { busy.value = true; try { engine.value = await api(action === 'start' ? ENGINE_START : ENGINE_STOP, { method: 'POST' }); } catch (error) { console.error(error); } finally { busy.value = false; } }
+        async function changeTimeframe() {
+          busy.value = true;
+          try {
+            await api('/engine/timeframe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timeframe: timeframe.value }) });
+            candles.value = [];
+            if (candleSeries) candleSeries.setData([]);
+            await refresh();
+          } catch (error) { console.error('Timeframe switch failed:', error); }
+          finally { busy.value = false; }
+        }
+        function addBlotter(type, payload, ts) { blotter.value.unshift({ id: `${ts}-${Math.random()}`, type, payload, ts }); blotter.value = blotter.value.slice(0, 100); if (payload && payload.market_regime) regime.value = payload.market_regime; }
+        function handleEvent(event) {
+          const type = event.type; addBlotter(type, event.payload, event.ts);
+          if (type === 'candle' && event.payload) updateChart([event.payload]);
+          if (type === 'signal' && event.payload && event.payload.market_regime) regime.value = event.payload.market_regime;
+          if (type === 'fill' || type === 'equity_update') refresh();
+        }
+        function connectSocket() {
+          clearTimeout(reconnectTimer);
+          const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+          socket = new WebSocket(`${protocol}://${location.host}/ws/live`);
+          socket.onopen = () => { connected.value = true; reconnectDelay = 1000; };
+          socket.onmessage = message => { try { handleEvent(JSON.parse(message.data)); } catch (error) { console.warn(error); } };
+          socket.onclose = () => { connected.value = false; reconnectTimer = setTimeout(connectSocket, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 15000); };
+          socket.onerror = () => socket.close();
+        }
+        function updateChart(items) {
+          if (!candleSeries || !items.length) return;
+          const values = items.map(item => ({ time: Math.floor(Number(item.open_time) / 1000), open: Number(item.open), high: Number(item.high), low: Number(item.low), close: Number(item.close) })).sort((a, b) => a.time - b.time);
+          if (items.length > 1) {
+            try { candleSeries.setData(values); } catch (_) { /* The chart can recover on the next poll. */ }
+          } else {
+            const last = values[values.length - 1];
+            if (last) candleSeries.update(last);
+          }
+        }
+        function initChart() {
+          chart = LightweightCharts.createChart(chartHost.value, { layout: { background: { color: '#0d1c30' }, textColor: '#8ca3bd' }, grid: { vertLines: { color: '#172b44' }, horzLines: { color: '#172b44' } }, rightPriceScale: { borderColor: '#29425f' }, timeScale: { borderColor: '#29425f', timeVisible: true } });
+          candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: '#48d597', downColor: '#ff7185', borderVisible: false, wickUpColor: '#48d597', wickDownColor: '#ff7185' });
+          new ResizeObserver(() => chart.applyOptions({ width: chartHost.value.clientWidth })).observe(chartHost.value);
+        }
+        onMounted(async () => { await nextTick(); initChart(); await refresh(); connectSocket(); pollTimer = setInterval(refresh, 10000); uptimeTimer = setInterval(() => { if (engine.value.running) engine.value.uptime_sec += 1; }, 1000); });
+        onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(uptimeTimer); clearTimeout(reconnectTimer); if (socket) socket.close(); if (chart) chart.remove(); });
+        return { engine, summary, positions, candles, blotter, connected, busy, regime, regimeClass, summaryCards, chartHost, timeframe, timeframeOptions, controlEngine, changeTimeframe, formatMoney, formatNumber, formatPercent, formatTime, formatUptime, compactPayload, eventClass };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
