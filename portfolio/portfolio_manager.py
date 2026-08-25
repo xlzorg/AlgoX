@@ -5,6 +5,7 @@ from broker.virtual_wallet import VirtualWallet
 from portfolio.performance import Performance
 from portfolio.position_tracker import Position, PositionTracker
 from portfolio.trade_journal import PortfolioTradeJournal
+from logs.file_logger import get_file_logger
 
 
 class PortfolioManager:
@@ -15,6 +16,7 @@ class PortfolioManager:
         self.journal = PortfolioTradeJournal()
         self.prices: dict[str, float] = {}
         self.realized_pnl_total = 0.0
+        self._file_logger = get_file_logger("portofolio_manager")
 
     def update(self, fill: Fill, *, stop_loss_price: float | None = None, tp1_price: float | None = None, tp2_price: float | None = None) -> Position:
         self.prices[fill.symbol] = fill.avg_price
@@ -28,8 +30,11 @@ class PortfolioManager:
             self.realized_pnl_total += position.realized_pnl
         return position
 
-    def check_exits(self, symbol: str, current_price: float, timeframe: str = ""):
-        return self.position_tracker.check_exits(symbol, current_price, timeframe)
+    def check_exits(self, symbol: str, current_price: float, timeframe: str = "", high: float | None = None, low: float | None = None,):
+        self._file_logger.info(
+            "CHECK EXITS PORTOFOLIO MANAGER TRIGGERED"
+        )
+        return self.position_tracker.check_exits(symbol, current_price, timeframe, high=high, low=low,)
 
     def mark_price(self, symbol: str, price: float) -> None:
         self.prices[symbol] = price
@@ -37,6 +42,12 @@ class PortfolioManager:
 
     def snapshot(self) -> object:
         return self.performance.snapshot(self.prices)
+    
+    # in VirtualWallet or PortfolioManager
+    def restore_from_snapshot(self, cash: float, realized_pnl: float = 0.0) -> None:
+        self.cash = cash
+        # if you track realized_pnl_total on PortfolioManager:
+        self.realized_pnl_total = realized_pnl
 
     def summary(self) -> dict:
         open_positions = self.position_tracker.open_positions()

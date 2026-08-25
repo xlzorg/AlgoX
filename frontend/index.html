@@ -113,111 +113,333 @@
           </table>
         </div>
       </section>
+
+      <section class="panel overflow-hidden rounded-xl">
+  <div class="flex items-center justify-between border-b border-slate-700/70 px-5 py-4">
+    <div>
+      <p class="text-sm font-semibold text-white">Candle Decision Trail</p>
+      <p class="muted text-xs">Full strategy breakdown and risk verdict for every closed candle</p>
+    </div>
+    <span class="muted text-xs">{{ decisions.length }} recorded</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-left text-xs">
+      <thead class="bg-slate-950/50 uppercase tracking-wider text-slate-400">
+        <tr>
+          <th class="px-4 py-3">Time</th>
+          <th class="px-4 py-3">Close</th>
+          <th class="px-4 py-3">Regime</th>
+          <th class="px-4 py-3">HTF Bias</th>
+          <th class="px-4 py-3">Sub-Strategies (Trend / Rev / Brk)</th>
+          <th class="px-4 py-3">Signal</th>
+          <th class="px-4 py-3">Score</th>
+          <th class="px-4 py-3">Risk Verdict</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        <tr v-if="!decisions.length"><td colspan="8" class="muted px-4 py-6 text-center">Waiting for closed candles...</td></tr>
+        <tr v-for="d in decisions" :key="d.signal_uuid || d.timestamp" class="hover:bg-slate-900/40">
+          <td class="px-4 py-3 font-mono text-slate-300">{{ formatTime(d.timestamp) }}</td>
+          <td class="px-4 py-3 text-white font-medium">{{ d.candle_close ? formatMoney(d.candle_close) : '--' }}</td>
+          <td class="px-4 py-3">
+            <span class="rounded px-2 py-0.5 font-semibold text-[10px]" :class="regimeBadge(d.market_regime)">{{ d.market_regime }}</span>
+          </td>
+          <td class="px-4 py-3" :class="d.htf_bias === 'BUY' ? 'positive' : d.htf_bias === 'SELL' ? 'negative' : 'muted'">{{ d.htf_bias }}</td>
+          <td class="px-4 py-3 font-mono text-slate-400">
+            T: {{ formatPercent(d.components?.trend_following || 0) }} |
+            R: {{ formatPercent(d.components?.mean_reversion || 0) }} |
+            B: {{ formatPercent(d.components?.breakout || 0) }}
+          </td>
+          <td class="px-4 py-3 font-bold" :class="d.direction === 'BUY' ? 'positive' : d.direction === 'SELL' ? 'negative' : d.direction === 'EXIT' ? 'text-amber-400' : 'muted'">
+            {{ d.direction }}
+          </td>
+          <td class="px-4 py-3 font-mono text-slate-200">{{ formatNumber(d.score, 3) }}</td>
+          <td class="px-4 py-3">
+            <span v-if="d.risk_decision === 'APPROVED'" class="text-emerald-400 font-semibold">APPROVED (SL: {{ formatMoney(d.stop_loss) }})</span>
+            <span v-else-if="d.risk_decision === 'REJECTED'" class="text-rose-400 font-semibold">REJECTED: {{ d.rejection_reason }}</span>
+            <span v-else class="muted">HOLD / NONE</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
     </main>
   </div>
 
-  <script>
-    const { createApp, ref, computed, onMounted, onBeforeUnmount, nextTick } = Vue;
+<script>
+  const { createApp, ref, computed, onMounted, onBeforeUnmount, nextTick } = Vue;
 
-    createApp({
-      setup() {
-        const engine = ref({ running: false, uptime_sec: 0, symbols: [], active_tfs: [] });
-        const summary = ref({ balance_usdt: 0, total_equity: 0, open_positions: 0, realized_pnl_total: 0, unrealized_pnl: 0 });
-        const positions = ref([]);
-        const candles = ref([]);
-        const blotter = ref([]);
-        const connected = ref(false);
-        const busy = ref(false);
-        const timeframe = ref('1h');
-        const timeframeOptions = ['1m', '5m', '15m', '1h'];
-        const regime = ref('UNKNOWN');
-        const chartHost = ref(null);
-        let chart;
-        let candleSeries;
-        let socket;
-        let reconnectTimer;
-        let pollTimer;
-        let uptimeTimer;
-        let reconnectDelay = 1000;
-        const ENGINE_START = '/engine/start';
-        const ENGINE_STOP = '/engine/stop';
+  createApp({
+    setup() {
+      const engine = ref({ running: false, uptime_sec: 0, symbols: [], active_tfs: [] });
+      const summary = ref({ balance_usdt: 0, total_equity: 0, open_positions: 0, realized_pnl_total: 0, unrealized_pnl: 0 });
+      const positions = ref([]);
+      const candles = ref([]);
+      const blotter = ref([]);
+      const decisions = ref([]);                    // ← NEW
+      const connected = ref(false);
+      const busy = ref(false);
+      const timeframe = ref('1m');
+      const timeframeOptions = ['1m', '5m', '15m', '1h'];
+      const regime = ref('UNKNOWN');
+      const chartHost = ref(null);
+      let chart;
+      let candleSeries;
+      let socket;
+      let reconnectTimer;
+      let pollTimer;
+      let uptimeTimer;
+      let reconnectDelay = 1000;
+      const ENGINE_START = '/engine/start';
+      const ENGINE_STOP = '/engine/stop';
 
-        const summaryCards = computed(() => [
-          { label: 'USDT balance', value: formatMoney(summary.value.balance_usdt) },
-          { label: 'Total equity', value: formatMoney(summary.value.total_equity) },
-          { label: 'Open positions', value: String(summary.value.open_positions || 0) },
-          { label: 'Realized PnL', value: formatMoney(summary.value.realized_pnl_total) },
-        ]);
-        const regimeClass = computed(() => regime.value === 'HIGH_VOL' ? 'border-amber-400/50 text-amber-300' : regime.value.includes('UP') ? 'border-emerald-400/50 text-emerald-300' : regime.value.includes('DOWN') ? 'border-rose-400/50 text-rose-300' : 'border-cyan-400/50 text-cyan-300');
+      const summaryCards = computed(() => [
+        { label: 'USDT balance', value: formatMoney(summary.value.balance_usdt) },
+        { label: 'Total equity', value: formatMoney(summary.value.total_equity) },
+        { label: 'Open positions', value: String(summary.value.open_positions || 0) },
+        { label: 'Realized PnL', value: formatMoney(summary.value.realized_pnl_total) },
+      ]);
 
-        function formatNumber(value, digits = 2) { return value == null ? '--' : Number(value).toLocaleString(undefined, { maximumFractionDigits: digits }); }
-        function formatMoney(value) { return value == null ? '--' : `${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`; }
-        function formatPercent(value) { return value == null ? '--' : `${Number(value).toFixed(2)}%`; }
-        function formatTime(ts) { return ts ? new Date(Number(ts)).toLocaleTimeString() : '--'; }
-        function formatUptime(seconds) { const s = Math.floor(seconds || 0); return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`; }
-        function compactPayload(payload) { return JSON.stringify(payload || {}, null, 0); }
-        function eventClass(type) { return type === 'fill' ? 'positive' : type === 'alert' ? 'negative' : type === 'signal' ? 'text-cyan-300' : 'text-slate-300'; }
+      const regimeClass = computed(() =>
+        regime.value === 'HIGH_VOL' ? 'border-amber-400/50 text-amber-300'
+        : regime.value.includes('UP') ? 'border-emerald-400/50 text-emerald-300'
+        : regime.value.includes('DOWN') ? 'border-rose-400/50 text-rose-300'
+        : 'border-cyan-400/50 text-cyan-300'
+      );
 
-        async function api(path, options) { const response = await fetch(path, options); if (!response.ok) throw new Error(`${response.status} ${path}`); return response.json(); }
-        async function refresh() {
-          try {
-            const [status, portfolio, open, candleData] = await Promise.all([
-              api('/engine/status'), api('/portfolio/summary'), api('/portfolio/positions'), api(`/market/candles?symbol=BTCUSDT&timeframe=${timeframe.value}&limit=200`)
-            ]);
-            engine.value = status;
-            summary.value = portfolio;
-            positions.value = open.items || [];
-            candles.value = candleData || [];
-            if (candles.value.length) updateChart(candles.value);
-          } catch (error) { console.warn('Dashboard refresh failed:', error); }
-        }
-        async function controlEngine(action) { busy.value = true; try { engine.value = await api(action === 'start' ? ENGINE_START : ENGINE_STOP, { method: 'POST' }); } catch (error) { console.error(error); } finally { busy.value = false; } }
-        async function changeTimeframe() {
-          busy.value = true;
-          try {
-            await api('/engine/timeframe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timeframe: timeframe.value }) });
-            candles.value = [];
-            if (candleSeries) candleSeries.setData([]);
-            await refresh();
-          } catch (error) { console.error('Timeframe switch failed:', error); }
-          finally { busy.value = false; }
-        }
-        function addBlotter(type, payload, ts) { blotter.value.unshift({ id: `${ts}-${Math.random()}`, type, payload, ts }); blotter.value = blotter.value.slice(0, 100); if (payload && payload.market_regime) regime.value = payload.market_regime; }
-        function handleEvent(event) {
-          const type = event.type; addBlotter(type, event.payload, event.ts);
-          if (type === 'candle' && event.payload) updateChart([event.payload]);
-          if (type === 'signal' && event.payload && event.payload.market_regime) regime.value = event.payload.market_regime;
-          if (type === 'fill' || type === 'equity_update') refresh();
-        }
-        function connectSocket() {
-          clearTimeout(reconnectTimer);
-          const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-          socket = new WebSocket(`${protocol}://${location.host}/ws/live`);
-          socket.onopen = () => { connected.value = true; reconnectDelay = 1000; };
-          socket.onmessage = message => { try { handleEvent(JSON.parse(message.data)); } catch (error) { console.warn(error); } };
-          socket.onclose = () => { connected.value = false; reconnectTimer = setTimeout(connectSocket, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 15000); };
-          socket.onerror = () => socket.close();
-        }
-        function updateChart(items) {
-          if (!candleSeries || !items.length) return;
-          const values = items.map(item => ({ time: Math.floor(Number(item.open_time) / 1000), open: Number(item.open), high: Number(item.high), low: Number(item.low), close: Number(item.close) })).sort((a, b) => a.time - b.time);
-          if (items.length > 1) {
-            try { candleSeries.setData(values); } catch (_) { /* The chart can recover on the next poll. */ }
-          } else {
-            const last = values[values.length - 1];
-            if (last) candleSeries.update(last);
-          }
-        }
-        function initChart() {
-          chart = LightweightCharts.createChart(chartHost.value, { layout: { background: { color: '#0d1c30' }, textColor: '#8ca3bd' }, grid: { vertLines: { color: '#172b44' }, horzLines: { color: '#172b44' } }, rightPriceScale: { borderColor: '#29425f' }, timeScale: { borderColor: '#29425f', timeVisible: true } });
-          candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: '#48d597', downColor: '#ff7185', borderVisible: false, wickUpColor: '#48d597', wickDownColor: '#ff7185' });
-          new ResizeObserver(() => chart.applyOptions({ width: chartHost.value.clientWidth })).observe(chartHost.value);
-        }
-        onMounted(async () => { await nextTick(); initChart(); await refresh(); connectSocket(); pollTimer = setInterval(refresh, 10000); uptimeTimer = setInterval(() => { if (engine.value.running) engine.value.uptime_sec += 1; }, 1000); });
-        onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(uptimeTimer); clearTimeout(reconnectTimer); if (socket) socket.close(); if (chart) chart.remove(); });
-        return { engine, summary, positions, candles, blotter, connected, busy, regime, regimeClass, summaryCards, chartHost, timeframe, timeframeOptions, controlEngine, changeTimeframe, formatMoney, formatNumber, formatPercent, formatTime, formatUptime, compactPayload, eventClass };
+      function formatNumber(value, digits = 2) {
+        return value == null ? '--' : Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
       }
-    }).mount('#app');
-  </script>
+      function formatMoney(value) {
+        return value == null ? '--' : `${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
+      }
+      function formatPercent(value) {
+        return value == null ? '--' : `${Number(value).toFixed(2)}%`;
+      }
+      function formatTime(ts) {
+        return ts ? new Date(Number(ts)).toLocaleTimeString() : '--';
+      }
+      function formatUptime(seconds) {
+        const s = Math.floor(seconds || 0);
+        return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
+      }
+      function compactPayload(payload) {
+        return JSON.stringify(payload || {}, null, 0);
+      }
+      function eventClass(type) {
+        return type === 'fill' ? 'positive' : type === 'alert' ? 'negative' : type === 'signal' ? 'text-cyan-300' : 'text-slate-300';
+      }
+
+      // ← NEW helper for decision badges
+      function regimeBadge(regime) {
+        if (regime === 'HIGH_VOL') return 'bg-amber-500/20 text-amber-300';
+        if (regime === 'TRENDING_UP') return 'bg-emerald-500/20 text-emerald-300';
+        if (regime === 'TRENDING_DOWN') return 'bg-rose-500/20 text-rose-300';
+        return 'bg-slate-700/40 text-slate-300';
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        if (!response.ok) throw new Error(`${response.status} ${path}`);
+        return response.json();
+      }
+
+      async function refresh() {
+        try {
+          const [status, portfolio, open, candleData] = await Promise.all([
+            api('/engine/status'),
+            api('/portfolio/summary'),
+            api('/portfolio/positions'),
+            api(`/market/candles?symbol=BTCUSDT&timeframe=${timeframe.value}&limit=200`)
+          ]);
+          engine.value = status;
+          summary.value = portfolio;
+          positions.value = open.items || [];
+          candles.value = candleData || [];
+          if (candles.value.length) updateChart(candles.value);
+        } catch (error) {
+          console.warn('Dashboard refresh failed:', error);
+        }
+      }
+
+      // ← NEW
+      async function loadDecisions() {
+        try {
+          const data = await api(`/signals/decisions?symbol=BTCUSDT&limit=25`);
+          decisions.value = data.items || [];
+        } catch (err) {
+          console.warn('Failed to load decisions history:', err);
+        }
+      }
+
+      async function controlEngine(action) {
+        busy.value = true;
+        try {
+          engine.value = await api(action === 'start' ? ENGINE_START : ENGINE_STOP, { method: 'POST' });
+        } catch (error) {
+          console.error(error);
+        } finally {
+          busy.value = false;
+        }
+      }
+
+      async function changeTimeframe() {
+        busy.value = true;
+        try {
+          await api('/engine/timeframe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timeframe: timeframe.value })
+          });
+          candles.value = [];
+          if (candleSeries) candleSeries.setData([]);
+          await refresh();
+        } catch (error) {
+          console.error('Timeframe switch failed:', error);
+        } finally {
+          busy.value = false;
+        }
+      }
+
+      function addBlotter(type, payload, ts) {
+        blotter.value.unshift({ id: `${ts}-${Math.random()}`, type, payload, ts });
+        blotter.value = blotter.value.slice(0, 100);
+        if (payload && payload.market_regime) regime.value = payload.market_regime;
+      }
+
+      function handleEvent(event) {
+        const type = event.type;
+        addBlotter(type, event.payload, event.ts);
+
+        // ← NEW: live decision stream
+        if (type === 'candle_decision' && event.payload) {
+          decisions.value.unshift({
+            timestamp: event.ts,
+            candle_close: event.payload.candle_close,
+            market_regime: event.payload.regime,
+            htf_bias: event.payload.htf_bias,
+            components: event.payload.components,
+            direction: event.payload.direction,
+            score: event.payload.confidence,
+            risk_decision: event.payload.risk_status,
+            rejection_reason: event.payload.rejection_reason,
+            stop_loss: event.payload.stop_loss,
+          });
+          decisions.value = decisions.value.slice(0, 50); // keep last 50
+        }
+
+        if (type === 'candle' && event.payload) updateChart([event.payload]);
+        if (type === 'signal' && event.payload && event.payload.market_regime) {
+          regime.value = event.payload.market_regime;
+        }
+        if (type === 'fill' || type === 'equity_update') refresh();
+      }
+
+      function connectSocket() {
+        clearTimeout(reconnectTimer);
+        const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+        socket = new WebSocket(`${protocol}://${location.host}/ws/live`);
+        socket.onopen = () => { connected.value = true; reconnectDelay = 1000; };
+        socket.onmessage = message => {
+          try { handleEvent(JSON.parse(message.data)); }
+          catch (error) { console.warn(error); }
+        };
+        socket.onclose = () => {
+          connected.value = false;
+          reconnectTimer = setTimeout(connectSocket, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+        };
+        socket.onerror = () => socket.close();
+      }
+
+      function updateChart(items) {
+        if (!candleSeries || !items.length) return;
+        const values = items
+          .map(item => ({
+            time: Math.floor(Number(item.open_time) / 1000),
+            open: Number(item.open),
+            high: Number(item.high),
+            low: Number(item.low),
+            close: Number(item.close)
+          }))
+          .sort((a, b) => a.time - b.time);
+
+        if (items.length > 1) {
+          try { candleSeries.setData(values); }
+          catch (_) { /* recover on next poll */ }
+        } else {
+          const last = values[values.length - 1];
+          if (last) candleSeries.update(last);
+        }
+      }
+
+      function initChart() {
+        chart = LightweightCharts.createChart(chartHost.value, {
+          layout: { background: { color: '#0d1c30' }, textColor: '#8ca3bd' },
+          grid: { vertLines: { color: '#172b44' }, horzLines: { color: '#172b44' } },
+          rightPriceScale: { borderColor: '#29425f' },
+          timeScale: { borderColor: '#29425f', timeVisible: true }
+        });
+        candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+          upColor: '#48d597',
+          downColor: '#ff7185',
+          borderVisible: false,
+          wickUpColor: '#48d597',
+          wickDownColor: '#ff7185'
+        });
+        new ResizeObserver(() => chart.applyOptions({ width: chartHost.value.clientWidth }))
+          .observe(chartHost.value);
+      }
+
+      onMounted(async () => {
+        await nextTick();
+        initChart();
+        await refresh();
+        await loadDecisions();               // ← NEW
+        connectSocket();
+        pollTimer = setInterval(refresh, 10000);
+        uptimeTimer = setInterval(() => {
+          if (engine.value.running) engine.value.uptime_sec += 1;
+        }, 1000);
+      });
+
+      onBeforeUnmount(() => {
+        clearInterval(pollTimer);
+        clearInterval(uptimeTimer);
+        clearTimeout(reconnectTimer);
+        if (socket) socket.close();
+        if (chart) chart.remove();
+      });
+
+      return {
+        engine,
+        summary,
+        positions,
+        candles,
+        blotter,
+        decisions,          // ← NEW
+        connected,
+        busy,
+        regime,
+        regimeClass,
+        summaryCards,
+        chartHost,
+        timeframe,
+        timeframeOptions,
+        controlEngine,
+        changeTimeframe,
+        formatMoney,
+        formatNumber,
+        formatPercent,
+        formatTime,
+        formatUptime,
+        compactPayload,
+        eventClass,
+        regimeBadge,        // ← NEW
+      };
+    }
+  }).mount('#app');
+</script>
 </body>
 </html>

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
-
+import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -52,6 +52,15 @@ class Candle(BaseModel):
         kline = data.get("k", data.get("kline", {}))
         if not kline:
             raise ValueError("Binance WebSocket payload does not contain a kline")
+
+            # temporary debug — remove later
+        
+        raw_x = kline.get("x")
+
+        logging.getLogger(__name__).info(
+            "KLINE raw x=%s i=%s t=%s c=%s",
+            raw_x, kline.get("i"), kline.get("t"), kline.get("c"),
+        )
         return cls(
             symbol=str(kline.get("s", data.get("s", ""))).upper(),
             timeframe=str(kline.get("i", "")),
@@ -65,7 +74,7 @@ class Candle(BaseModel):
             trades=_integer(kline.get("n")),
             taker_buy_vol=_number(kline.get("V")),
             close_time=_integer(kline.get("T")),
-            is_closed=bool(kline.get("x", False)),
+            is_closed=bool(raw_x) if raw_x is not None else False,
         )
 
     @classmethod

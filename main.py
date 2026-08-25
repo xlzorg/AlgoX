@@ -7,6 +7,18 @@ from app.lifespan import lifespan
 from app.middleware import register_middleware
 from app.routers import analytics, engine, indicators, market, portfolio, signals, trades, ws
 from config.settings import get_settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
+# 2. Tell the noisy third-party libraries to only log WARNINGs or errors
+logging.getLogger("websockets").setLevel(logging.WARNING)
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)

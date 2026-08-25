@@ -15,6 +15,7 @@ class IndicatorSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     timeframe: Mapped[str] = mapped_column(String, nullable=False)
     candle_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)  # or Mapped[float | None] = mapped_column(Float, nullable=True)
     ema_9: Mapped[float | None] = mapped_column(Float)
     ema_21: Mapped[float | None] = mapped_column(Float)
     ema_50: Mapped[float | None] = mapped_column(Float)

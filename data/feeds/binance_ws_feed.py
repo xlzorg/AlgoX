@@ -85,8 +85,12 @@ class BinanceWebSocketFeed(BaseFeed):
         data = payload.get("data", payload)
         if data.get("e") == "kline":
             candle = Candle.from_binance_ws(payload)
-            if candle.is_closed:
-                await self._emit(candle)
+            logger.info(
+                "FEED yield %s %s closed=%s t=%s",
+                candle.symbol, candle.timeframe, candle.is_closed, candle.open_time,
+            )
+    
+            await self._emit(candle)
             return
         if data.get("e") == "aggTrade":
             await self._emit(

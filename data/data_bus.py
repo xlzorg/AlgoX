@@ -103,8 +103,20 @@ class DataBus:
     def _normalize(event: Any) -> Any:
         if isinstance(event, (Candle, OnChainSnapshot, IndicatorSnapshot, Signal, OrderIntent, Fill, JournalEntry)):
             return event
-        if isinstance(event, dict) and event.get("event_type") == "trade":
-            return event
+        if isinstance(event, dict):
+            # Known non-market trade events pass through unchanged
+            if event.get("event_type") == "trade":
+                return event
+            # Try market-event normalisation; fall back to the original payload
+            # for any other dict (decisions, signals, journal entries, etc.)
+            try:
+                return normalize_market_event(event)
+            except ValueError:
+                return event
+        raise TypeError(
+            "DataBus events must be Candle, OnChainSnapshot, IndicatorSnapshot, "
+            "Signal, OrderIntent, Fill, JournalEntry, or a mapping"
+        )
         if isinstance(event, dict):
             return normalize_market_event(event)
         raise TypeError("DataBus events must be Candle, OnChainSnapshot, or a mapping")

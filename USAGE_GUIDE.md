@@ -101,7 +101,7 @@ cd /home/raspberrypi/Documents/Project_siang/trading_bot
 source ../venv/bin/activate
 PYTHONPATH=. python tests/backtest/runner.py tests/backtest/data/BTCUSDT_1h.csv --symbol BTCUSDT --timeframe 1h
 
-python tests/backtest/runner.py tests/backtest/data/binance-BTCUSDT-1h.csv --symbol BTCUSDT --timeframe 1h
+python tests/backtest/runner.py tests/backtest/data/BTCUSDT_1m_2026_07.csv --symbol BTCUSDT --timeframe 1m
 ```
 
 Using the local `.venv` instead:

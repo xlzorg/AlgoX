@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     coingecko_poll_interval: int = 60
     coingecko_rate_limit_per_min: int = 25
 
-    symbols: list[str] = ["BTCUSDT", "ETHUSDT"]
+    symbols: list[str] = ["BTCUSDT"]
     timeframes: list[str] = ["1m", "5m", "1h"]
-    primary_tf: str = "1h"
-    trigger_tf: str = "5m"
+    primary_tf: str = "1m"
+    trigger_tf: str = "1m"
     history_candles: int = 500
 
     starting_balance_usdt: float = 10_000.0
@@ -46,15 +46,22 @@ class Settings(BaseSettings):
     bb_period: int = 20
     bb_std: float = 2.0
 
-    max_risk_per_trade_pct: float = 0.01
-    atr_stop_multiplier: float = 1.5
-    tp1_r: float = 1.5
-    tp2_r: float = 2.5
-    max_open_positions: int = 5
+    max_risk_per_trade_pct: float = 0.0125
+
+    atr_stop_multiplier: float = 1.4
+
+    tp1_r: float = 1.3
+    tp2_r: float = 2.3
+
+    max_open_positions: int = 6
+
     max_single_asset_pct: float = 0.20
+
     max_daily_loss_pct: float = 0.03
+
     max_drawdown_pct: float = 0.10
-    cooldown_after_sl_sec: int = 300
+
+    cooldown_after_sl_sec: int = 180
     auto_manage_positions: bool = Field(
         default=True,
         validation_alias=AliasChoices("AUTO_MANAGE_POSITIONS", "auto_manage_positions"),

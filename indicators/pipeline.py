@@ -42,6 +42,16 @@ class IndicatorPipeline:
         if not candles:
             return None
         frame = pd.DataFrame([c.model_dump() for c in candles])
+
+        # Paksa kolom OHLCV ke float64 secara eksplisit.
+        # Candle 1m dari Binance bisa menghasilkan kolom object jika ada nilai
+        # None / NaN yang masuk melalui field Optional di model Candle.
+        # Ini mencegah downstream crash di ADX, ATR, dan indikator lain yang
+        # memanggil .ewm() atau .rolling() dan mengharapkan dtype numerik.
+        _numeric_cols = ["open", "high", "low", "close", "volume", "quote_volume"]
+        for col in _numeric_cols:
+            if col in frame.columns:
+                frame[col] = pd.to_numeric(frame[col], errors="coerce")
         latest = frame.iloc[-1]
         ema = {period: EMA(period).calculate(frame).iloc[-1] for period in self.ema_periods}
         vwap = self.vwap.calculate(frame).iloc[-1]
@@ -59,7 +69,7 @@ class IndicatorPipeline:
         onchain = self.market_store.get_onchain(symbol)
         latest_onchain = onchain[-1] if onchain else None
         return IndicatorSnapshot(
-            symbol=symbol.upper(), timeframe=timeframe, candle_time=int(latest["open_time"]),
+            symbol=symbol.upper(), timeframe=timeframe, candle_time=int(latest["open_time"]), close=close,                 
             ema_9=self._number(ema.get(9)), ema_21=self._number(ema.get(21)),
             ema_50=self._number(ema.get(50)), ema_200=self._number(ema.get(200)),
             vwap=vwap_value, bb_upper=self._number(bands.get("upper")),
@@ -77,6 +87,7 @@ class IndicatorPipeline:
             exchange_netflow=latest_onchain.exchange_netflow_24h if latest_onchain else None,
             market_regime=self._regime(close, self._number(ema.get(50)), self._number(ema.get(200)), self._number(adx), self._number(hist_vol)),
             created_at=int(datetime.now(timezone.utc).timestamp() * 1000),
+            
         )
 
     def compute_history(self, symbol: str, timeframe: str) -> list[IndicatorSnapshot]:

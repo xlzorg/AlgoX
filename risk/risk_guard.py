@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,8 @@ from risk.position_sizer import PositionSizer
 from risk.stop_loss import calculate_stop_loss
 from risk.take_profit import calculate_targets
 from strategy.base_strategy import Signal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -34,65 +37,175 @@ class OrderIntent:
 class RiskGuard:
     def __init__(self) -> None:
         settings = get_settings()
-        self.sizer = PositionSizer(settings.max_risk_per_trade_pct, settings.atr_stop_multiplier)
-        self.exposure = ExposureGuard(settings.max_open_positions, settings.max_single_asset_pct)
-        self.drawdown = DrawdownCircuit(settings.max_daily_loss_pct, settings.max_drawdown_pct)
-        self.cooldown_after_sl_sec = settings.cooldown_after_sl_sec
 
-    def evaluate(self, signal: Signal, state: dict[str, Any] | None = None, snapshot: IndicatorSnapshot | None = None) -> OrderIntent:
+        self.sizer = PositionSizer(
+            max_risk_fraction=settings.max_risk_per_trade_pct,
+            atr_stop_multiplier=settings.atr_stop_multiplier,
+            max_single_asset_fraction=settings.max_single_asset_pct,
+        )
+        self.exposure = ExposureGuard(
+            max_positions=settings.max_open_positions,
+            max_single_asset_fraction=settings.max_single_asset_pct,
+        )
+        self.drawdown = DrawdownCircuit(
+            settings.max_daily_loss_pct,
+            settings.max_drawdown_pct,
+        )
+        self.cooldown_after_sl_sec = settings.cooldown_after_sl_sec
+        
+        # --- IMPROVEMENT: Internal State Tracking ---
+        # We track these internally so the guard works even if the PortfolioManager 
+        # forgets to pass the exact values in the state dict.
+        self._peak_equity: float = 0.0
+        self._sl_cooldowns: dict[str, float] = {}
+
+    def record_stop_loss(self, symbol: str) -> None:
+        """Lock trading for a specific asset after a stop-loss is hit."""
+        self._sl_cooldowns[symbol] = time.time()
+        logger.info("Cooldown activated for %s: Locked for %d seconds", symbol, self.cooldown_after_sl_sec)
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def evaluate(
+        self,
+        signal: Signal,
+        state: dict[str, Any] | None = None,
+        snapshot: IndicatorSnapshot | None = None,
+    ) -> OrderIntent:
         state = state or {}
         signal_uuid = signal.signal_uuid or str(uuid.uuid4())
-        
+
+        # ── Gate 0: only act on actionable signals ─────────────────────
         if signal.direction not in {"BUY", "SELL"}:
             return self._reject(signal, signal_uuid, "NON_ACTIONABLE_SIGNAL")
-        
-        # 1. Check Drawdown Circuit Breaker
+
+        # Resolve equity early for the drawdown check
+        equity = self._resolve_equity(state)
+
+        # ── Gate 1: drawdown circuit breaker ───────────────────────────
+        # IMPROVEMENT: Dynamically track peak equity internally
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+            
+        computed_drawdown = 0.0
+        if self._peak_equity > 0:
+            computed_drawdown = (self._peak_equity - equity) / self._peak_equity
+
         circuit_reason = self.drawdown.check(
             float(state.get("daily_loss_fraction", state.get("daily_loss_pct", 0.0))),
-            float(state.get("drawdown_fraction", state.get("drawdown_pct", 0.0)))
+            float(state.get("drawdown_fraction",   state.get("drawdown_pct", computed_drawdown))),
         )
         if circuit_reason:
             return self._reject(signal, signal_uuid, circuit_reason)
-        
-        # 2. Check Open Position Count Limit
-        open_positions_value = state.get("open_positions", 0)
-        open_positions = len(open_positions_value) if isinstance(open_positions_value, (list, tuple, set, dict)) else int(open_positions_value)
-        exposure_reason = self.exposure.check(open_positions, float(state.get("asset_exposure_fraction", state.get("asset_exposure_pct", 0.0))))
-        if exposure_reason:
-            return self._reject(signal, signal_uuid, exposure_reason)
-        
-        # 3. Check Cooldown
-        if state.get("stop_loss_at") is not None and time.time() - float(state["stop_loss_at"]) < self.cooldown_after_sl_sec:
+
+        # ── Gate 2: open position count ────────────────────────────────
+        raw_positions = state.get("open_positions", 0)
+        open_positions = (
+            len(raw_positions)
+            if isinstance(raw_positions, (list, tuple, set, dict))
+            else int(raw_positions)
+        )
+        if open_positions >= self.exposure.max_positions:
+            return self._reject(signal, signal_uuid, "MAX_OPEN_POSITIONS")
+
+        # ── Gate 3: stop-loss cooldown ─────────────────────────────────
+        # IMPROVEMENT: Check both the passed state AND our internal tracker
+        sl_at = state.get("stop_loss_at", self._sl_cooldowns.get(signal.symbol, 0.0))
+        if sl_at and (time.time() - float(sl_at)) < self.cooldown_after_sl_sec:
             return self._reject(signal, signal_uuid, "STOP_LOSS_COOLDOWN")
-        
-        # 4. Extract Pricing, ATR, and Equity
-# 4. Extract Pricing, ATR, and Equity
-        # FIXED: Fallback to the live candle close price if state doesn't have it
-        entry = float(state.get("entry_price", snapshot.close if snapshot and hasattr(snapshot, "close") else 0.0))
-        atr = float(state.get("atr", snapshot.atr_14 if snapshot and getattr(snapshot, "atr_14", None) is not None else 0.0))
-        
-        # FIXED: Check multiple possible dictionary keys for your cash balance
-        equity = float(state.get("total_equity", state.get("equity", state.get("balance_usdt", 10000.0))))
-        
-        if equity <= 0 or entry <= 0 or atr <= 0:
-            return self._reject(signal, signal_uuid, f"INVALID_SIZING_INPUT: equity={equity}, entry={entry}, atr={atr}")
-        
-        # 5. Calculate Sizing First
+
+        # ── Step 4: resolve entry price ────────────────────────────────
+        entry = self._resolve_entry(state, snapshot)
+        if entry <= 0:
+            return self._reject(signal, signal_uuid, "INVALID_ENTRY_PRICE")
+
+        # ── Step 5: resolve ATR ────────────────────────────────────────
+        atr = self._resolve_atr(state, snapshot)
+        if atr <= 0:
+            return self._reject(signal, signal_uuid, "INVALID_ATR")
+
+        # ── Step 6: resolve equity (cash balance) ──────────────────────
+        if equity <= 0:
+            return self._reject(signal, signal_uuid, "INVALID_EQUITY")
+
+        # ── Step 7: compute position size (capped by both risk + exposure) ──
         size = self.sizer.calculate(equity, atr, entry)
         if size.quantity <= 0:
-            return self._reject(signal, signal_uuid, "INVALID_SIZING_INPUT")
-        
-        # 6. Check Single-Asset Exposure Limit
-        notional = size.quantity * entry
-        if notional > equity * self.exposure.max_single_asset_fraction:
-            return self._reject(signal, signal_uuid, "MAX_SINGLE_ASSET_EXPOSURE")
-        
-        # 7. Compute SL and TP Targets
+            return self._reject(signal, signal_uuid, "ZERO_QUANTITY")
+
+        # ── Step 8: verify available cash covers the notional cost ─────
+        if signal.direction == "BUY" and size.notional > equity:
+            fee_buffer = 1.0015
+            affordable_qty = equity / (entry * fee_buffer)
+            if affordable_qty <= 0:
+                return self._reject(signal, signal_uuid, "INSUFFICIENT_BALANCE")
+            quantity = min(size.quantity, affordable_qty)
+            notional = quantity * entry
+        else:
+            quantity = size.quantity
+            notional = size.notional
+
+        # ── Step 9: compute stop loss and take profit ───────────────────
         stop = calculate_stop_loss(entry, atr, signal.direction, self.sizer.atr_stop_multiplier)
         tp1, tp2 = calculate_targets(entry, stop, signal.direction)
-        
-        return OrderIntent(True, signal_uuid, signal.symbol, signal.direction, size.quantity, entry, stop, tp1, tp2, size.risk_fraction)
+
+        return OrderIntent(
+            approved=True,
+            signal_uuid=signal_uuid,
+            symbol=signal.symbol,
+            direction=signal.direction,
+            quantity=quantity,
+            entry_price=entry,
+            stop_loss_price=stop,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            risk_pct=size.risk_fraction,
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_entry(state: dict, snapshot: IndicatorSnapshot | None) -> float:
+        v = state.get("entry_price")
+        if v is not None and float(v) > 0:
+            return float(v)
+        if snapshot is not None:
+            close = getattr(snapshot, "close", None)
+            if close is not None and float(close) > 0:
+                return float(close)
+        return 0.0
+
+    @staticmethod
+    def _resolve_atr(state: dict, snapshot: IndicatorSnapshot | None) -> float:
+        v = state.get("atr")
+        if v is not None and float(v) > 0:
+            return float(v)
+        if snapshot is not None:
+            atr = getattr(snapshot, "atr_14", None)
+            if atr is not None and float(atr) > 0:
+                return float(atr)
+        return 0.0
+
+    @staticmethod
+    def _resolve_equity(state: dict) -> float:
+        for key in ("balance_usdt", "equity", "total_equity"):
+            v = state.get(key)
+            if v is not None:
+                f = float(v)
+                if f > 0:
+                    return f
+        return 0.0
 
     @staticmethod
     def _reject(signal: Signal, signal_uuid: str, reason: str) -> OrderIntent:
-        return OrderIntent(False, signal_uuid, signal.symbol, signal.direction, rejection_reason=reason)
+        return OrderIntent(
+            approved=False,
+            signal_uuid=signal_uuid,
+            symbol=signal.symbol,
+            direction=signal.direction,
+            rejection_reason=reason,
+        )

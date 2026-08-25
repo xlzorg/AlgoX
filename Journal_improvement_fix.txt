@@ -1,0 +1,18 @@
+NOTE :
+
+LANJUT PERBAIKI DI BAGIAN STRAGEGY, SEPERTINYA MASALAHNYA DI BAGIAN STRATEGY YANG MENYEBABKAN BEBERAPA KONDISI TETAP  DONE
+
+LANJUT FOKUS MALAM INI:
+2. If Total fills > 0 and Closed positions > 0 → everything is working; you just finished flat.
+If Total fills == 0 → the fill is never being created (we would need to dig into the exact call).
+If Total fills > 0 but Closed positions == 0 and open == 0 → something is deleting positions incorrectly (unlikely with current code).
+
+FILLS ga mau keisi, fokus ke permasalahannya di entah trading engine atau paperbroker function.
+
+
+
+00.47 25/08/2026
+selanjutnya fix di prod running. system sukses membuka posisi namun dalam database table position tidak memiliki data tp1, tp2, sl dan beebrapa lainnya. dan kemungkinan tidak pernahterjadi exit
+sepertinya masalahnya ada di bagian position
+
+setiap restart uvicorn, open position di frontend tidak terload

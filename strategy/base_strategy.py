@@ -24,12 +24,5 @@ class BaseStrategy(ABC):
     strategy_id = "base"
 
     @abstractmethod
-    def evaluate(self, snapshot: IndicatorSnapshot) -> Signal:
-        raise NotImplementedError
-from abc import ABC, abstractmethod
-
-
-class BaseStrategy(ABC):
-    @abstractmethod
-    def evaluate(self, market: dict) -> dict | None:
+    def evaluate(self, snapshot: IndicatorSnapshot, position: Any | None = None) -> Signal:
         raise NotImplementedError

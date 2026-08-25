@@ -19,6 +19,7 @@ class IndicatorSnapshot:
     symbol: str
     timeframe: str
     candle_time: int
+    close: float | None = None          # ← ADD THIS
     ema_9: float | None = None
     ema_21: float | None = None
     ema_50: float | None = None

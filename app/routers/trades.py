@@ -43,6 +43,46 @@ async def open_trades(engine: TradingEngine = Depends(get_engine)) -> dict:
 async def trade_journal(engine: TradingEngine = Depends(get_engine)) -> dict:
     return {"items": [entry.__dict__ if hasattr(entry, "__dict__") else {field: getattr(entry, field) for field in entry.__dataclass_fields__} for entry in engine.portfolio_manager.journal.entries], "total": len(engine.portfolio_manager.journal.entries)}
 
+@router.post("/force-flat")
+async def force_flat(
+    engine: TradingEngine = Depends(get_engine),
+    db: AsyncSession = Depends(get_db),
+):
+    """Emergency: close all open positions and clear in-memory state."""
+    from db.models.position import Position as PositionRow
+    from sqlalchemy import update
+    import time
+
+    # 1. Close in database
+    await db.execute(
+        update(PositionRow)
+        .where(PositionRow.status == "OPEN")
+        .values(
+            status="CLOSED",
+            exit_price=PositionRow.entry_price,   # zero PnL close
+            realized_pnl=0.0,
+            exit_time=int(time.time() * 1000),
+        )
+    )
+    await db.commit()
+
+    # 2. Clear in-memory tracker
+    tracker = engine.portfolio_manager.position_tracker
+    for pos in list(tracker.open_positions()):
+        pos.status = "CLOSED"
+        pos.exit_price = pos.entry_price
+        pos.realized_pnl = 0.0
+        tracker.closed.append(pos)
+        tracker._positions.pop(pos.position_uuid, None)
+
+    # 3. Reset realized PnL counter if you want a true clean slate
+    engine.portfolio_manager.realized_pnl_total = 0.0
+
+    return {
+        "status": "ok",
+        "message": "All open positions force-closed. System is flat.",
+        "open_positions_left": len(tracker.open_positions()),
+    }
 
 @router.get("/{trade_id}", response_model=TradeResponse)
 async def get_trade(trade_id: int, db: AsyncSession = Depends(get_db)) -> TradeResponse:

@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 from indicators.base_indicator import BaseIndicator
@@ -20,5 +21,16 @@ class ADX(BaseIndicator):
         atr = true_range.ewm(alpha=1 / self.period, adjust=False, min_periods=self.period).mean()
         plus_di = 100 * plus_dm.ewm(alpha=1 / self.period, adjust=False, min_periods=self.period).mean() / atr
         minus_di = 100 * minus_dm.ewm(alpha=1 / self.period, adjust=False, min_periods=self.period).mean() / atr
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)
+
+        # FIX: .replace(0, pd.NA) menyuntikkan pd.NA ke Series sehingga dtype
+        # berubah menjadi object dan .ewm() crash dengan DataError.
+        # Ini terjadi saat plus_di + minus_di == 0, yang umum di candle 1m
+        # dengan volume rendah atau candle doji berturut-turut.
+        # Solusi: pakai np.where agar hasilnya tetap float64 murni.
+        denom = plus_di + minus_di
+        dx = pd.Series(
+            np.where(denom == 0, np.nan, 100 * (plus_di - minus_di).abs() / denom),
+            index=frame.index,
+            dtype=float,
+        )
         return dx.ewm(alpha=1 / self.period, adjust=False, min_periods=self.period).mean()
