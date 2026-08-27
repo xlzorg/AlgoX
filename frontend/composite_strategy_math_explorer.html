@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Composite Strategy Explorer</title>
+<style>
+/* 1. MENDUPLIKASI VARIABEL WARNA CLAUDE UI */
+:root {
+  --surface-0: #f3f4f6; /* Warna abu-abu background formula/bar */
+  --surface-1: #f9fafb; /* Warna abu-abu sangat muda */
+  --surface-2: #ffffff; /* Putih bersih untuk card section */
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --border-stronger: #9ca3af;
+  --border-accent: #9ca3af;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --text-accent: #2563eb;
+  --text-success: #15803d; /* Hijau gelap untuk teks */
+  --text-danger: #b91c1c;  /* Merah gelap untuk teks */
+  --text-warning: #b45309;
+  --bg-success: #dcfce7;   /* Hijau muda untuk background tag */
+  --bg-danger: #fee2e2;    /* Merah muda untuk background tag */
+  --bg-warning: #fef3c7;
+  --bg-accent: #f3f4f6;
+  --radius: 8px;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+/* 2. BASE RESET & BODY STYLING */
+body {
+  font-family: var(--font-sans);
+  background-color: var(--surface-1);
+  color: var(--text-primary);
+  margin: 0;
+  padding: 24px;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+h2.sr-only {position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.section {margin:1rem 0;padding:1.5rem;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);}
+.section-title {font-size:12px;font-weight:600;color:var(--text-secondary);margin:0 0 16px;letter-spacing:.05em;text-transform:uppercase}
+.grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+
+/* 3. CUSTOM RANGE SLIDER (Tampilan modern) */
+.slider-row {display:flex;align-items:center;gap:12px;margin:10px 0;font-size:13px;color:var(--text-secondary)}
+.slider-row input[type=range] {
+  -webkit-appearance: none;
+  flex: 1;
+  background: transparent;
+}
+.slider-row input[type=range]:focus { outline: none; }
+/* Webkit (Chrome, Safari, Edge) */
+.slider-row input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 18px; width: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1.5px solid var(--border-stronger);
+  cursor: pointer;
+  margin-top: -7px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.slider-row input[type=range]::-webkit-slider-runnable-track {
+  width: 100%; height: 4px;
+  cursor: pointer;
+  background: var(--border);
+  border-radius: 2px;
+}
+/* Firefox */
+.slider-row input[type=range]::-moz-range-thumb {
+  height: 16px; width: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1.5px solid var(--border-stronger);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.slider-row input[type=range]::-moz-range-track {
+  width: 100%; height: 4px;
+  cursor: pointer;
+  background: var(--border);
+  border-radius: 2px;
+}
+.slider-row .val {min-width:48px;text-align:right;font-family:var(--font-mono);font-size:13px;font-weight:500;color:var(--text-primary)}
+
+/* 4. TYPOGRAPHY & BLOCKS */
+.metric {background:var(--surface-1);border-radius:var(--radius);padding:1rem}
+.metric .label {font-size:12px;color:var(--text-muted);margin:0 0 6px}
+.metric .num {font-size:24px;font-weight:400;color:var(--text-primary);font-family:var(--font-sans); margin:0}
+.metric .num.buy {color:var(--text-success); font-weight:500}
+.metric .num.sell {color:var(--text-danger); font-weight:500}
+.metric .num.hold {color:var(--text-warning); font-weight:500}
+
+.bar-track {height:8px;background:var(--surface-0);border-radius:4px;overflow:hidden;margin:4px 0}
+.bar-fill {height:100%;border-radius:4px;transition:width .2s,background .2s}
+
+.formula {font-size:12px;font-family:var(--font-mono);color:var(--text-secondary);background:var(--surface-0);padding:.6rem .75rem;border-radius:var(--radius);margin:12px 0;line-height:1.6; border: 1px solid var(--border)}
+
+.tag {display:inline-block;font-size:11px;padding:3px 8px;border-radius:12px;font-weight:600;margin-left:8px; text-transform: uppercase}
+.tag.buy {background:var(--bg-success);color:var(--text-success)}
+.tag.sell {background:var(--bg-danger);color:var(--text-danger)}
+.tag.hold {background:var(--bg-warning);color:var(--text-warning)}
+
+.row-score {display:flex;align-items:center;gap:12px;margin:6px 0;font-size:13px}
+.row-score .name {width:100px;color:var(--text-secondary);font-family:var(--font-mono)}
+.row-score .sval {width:56px;text-align:right;font-family:var(--font-mono);color:var(--text-accent); font-weight: 500}
+.row-score .weight {width:44px;text-align:right;font-family:var(--font-mono);font-size:11px;color:var(--text-muted)}
+.row-score .contrib {width:56px;text-align:right;font-family:var(--font-mono);font-size:11px;color:var(--text-accent)}
+
+/* 5. TABS */
+.tab-bar {display:flex;gap:8px;margin-bottom:16px}
+.tab {font-size:13px;font-weight:500;padding:8px 16px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;background:var(--surface-2);color:var(--text-secondary); transition: all 0.2s}
+.tab:hover {background: var(--surface-0)}
+.tab.active {background:var(--surface-2);color:var(--text-primary);border-color:var(--border-stronger);box-shadow:0 1px 2px rgba(0,0,0,0.05)}
+.panel {display:none}.panel.active {display:block}
+</style>
+</head>
+<body>
+
+<h2 class="sr-only">Composite trading strategy mathematical model — interactive parameter explorer</h2>
+
+<div style="max-width: 800px; margin: 0 auto; padding:.5rem 0 1rem">
+  <div style="font-size:14px;color:var(--text-secondary);margin-bottom:1.5rem">
+    Adjust indicator values and weights — see how each parameter flows to the final signal.
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab active" onclick="switchTab('trend')">Trend following</button>
+    <button class="tab" onclick="switchTab('mr')">Mean reversion</button>
+    <button class="tab" onclick="switchTab('brk')">Breakout</button>
+    <button class="tab" onclick="switchTab('composite')">Composite</button>
+  </div>
+
+  <!-- TREND FOLLOWING -->
+  <div id="tab-trend" class="panel active">
+    <div class="section">
+      <div class="section-title">Indicator inputs → scores</div>
+      <div class="formula">score<sub>ema_trend</sub> = clamp( (ema50 − ema200) / |ema200| × 20 )</div>
+      <div class="slider-row"><span style="width:100px">EMA 50</span><input type="range" min="50" max="200" step="0.1" value="105" id="t_ema50" oninput="recalc()"><span class="val" id="t_ema50_v">105</span></div>
+      <div class="slider-row"><span style="width:100px">EMA 200</span><input type="range" min="50" max="200" step="0.1" value="100" id="t_ema200" oninput="recalc()"><span class="val" id="t_ema200_v">100</span></div>
+      <div class="slider-row"><span style="width:100px">EMA 9</span><input type="range" min="50" max="200" step="0.1" value="108" id="t_ema9" oninput="recalc()"><span class="val" id="t_ema9_v">108</span></div>
+      <div class="slider-row"><span style="width:100px">EMA 21</span><input type="range" min="50" max="200" step="0.1" value="103" id="t_ema21" oninput="recalc()"><span class="val" id="t_ema21_v">103</span></div>
+      
+      <div class="formula">score<sub>macd</sub> = clamp( macd_hist / 0.002 )</div>
+      <div class="slider-row"><span style="width:100px">MACD hist</span><input type="range" min="-0.006" max="0.006" step="0.0001" value="0.001" id="t_macd" oninput="recalc()"><span class="val" id="t_macd_v">0.0010</span></div>
+      
+      <div class="formula">score<sub>rsi</sub> : RSI≥52→+1, RSI≤48→−1, else linear</div>
+      <div class="slider-row"><span style="width:100px">RSI 14</span><input type="range" min="0" max="100" step="1" value="55" id="t_rsi" oninput="recalc()"><span class="val" id="t_rsi_v">55</span></div>
+      
+      <div class="formula">score<sub>volume</sub> = clamp( (vol_ratio − 1.0) / 1.0 )</div>
+      <div class="slider-row"><span style="width:100px">Vol ratio</span><input type="range" min="0" max="3" step="0.05" value="1.2" id="t_vol" oninput="recalc()"><span class="val" id="t_vol_v">1.20</span></div>
+      
+      <div class="formula">score<sub>netflow</sub> = clamp( −netflow / 100 )  [negative = bullish]</div>
+      <div class="slider-row"><span style="width:100px">Netflow</span><input type="range" min="-200" max="200" step="5" value="-50" id="t_nf" oninput="recalc()"><span class="val" id="t_nf_v">-50</span></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Weights & aggregation</div>
+      <div class="formula" style="margin-bottom: 20px;">final_score = Σ(score<sub>i</sub> × w<sub>i</sub>) / Σw<sub>i</sub></div>
+      <div id="trend_scores"></div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--border)" id="trend_final"></div>
+    </div>
+  </div>
+
+  <!-- MEAN REVERSION -->
+  <div id="tab-mr" class="panel">
+    <div class="section">
+      <div class="section-title">Indicator inputs → scores</div>
+      <div class="formula">score<sub>bb</sub> = clamp( −(close − bb_mid) / (bb_width/2) )  [below mid → bullish]</div>
+      <div class="slider-row"><span style="width:90px">Close</span><input type="range" min="50" max="200" step="0.1" value="97" id="mr_close" oninput="recalc()"><span class="val" id="mr_close_v">97.0</span></div>
+      <div class="slider-row"><span style="width:90px">BB Upper</span><input type="range" min="50" max="200" step="0.1" value="108" id="mr_bbu" oninput="recalc()"><span class="val" id="mr_bbu_v">108.0</span></div>
+      <div class="slider-row"><span style="width:90px">BB Lower</span><input type="range" min="50" max="200" step="0.1" value="92" id="mr_bbl" oninput="recalc()"><span class="val" id="mr_bbl_v">92.0</span></div>
+      
+      <div class="formula">score<sub>rsi</sub> = clamp( (50 − rsi) / 20 )  [RSI30→+1, RSI50→0, RSI70→−1]</div>
+      <div class="slider-row"><span style="width:90px">RSI 14</span><input type="range" min="0" max="100" step="1" value="38" id="mr_rsi" oninput="recalc()"><span class="val" id="mr_rsi_v">38</span></div>
+      
+      <div class="formula">score<sub>vwap</sub> = clamp( −(close−vwap)/|vwap| × 50 )  [~2% dev → ±1]</div>
+      <div class="slider-row"><span style="width:90px">VWAP</span><input type="range" min="50" max="200" step="0.1" value="100" id="mr_vwap" oninput="recalc()"><span class="val" id="mr_vwap_v">100.0</span></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Equal-weight aggregation</div>
+      <div class="formula" style="margin-bottom: 20px;">final_score = (score<sub>bb</sub> + score<sub>rsi</sub> + score<sub>vwap</sub>) / 3</div>
+      <div id="mr_scores"></div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--border)" id="mr_final"></div>
+    </div>
+  </div>
+
+  <!-- BREAKOUT -->
+  <div id="tab-brk" class="panel">
+    <div class="section">
+      <div class="section-title">Indicator inputs → scores</div>
+      <div class="formula">score<sub>kc</sub> = clamp( (close − kc_mid) / kc_half_width )  [above upper → bullish]</div>
+      <div class="slider-row"><span style="width:90px">Close</span><input type="range" min="50" max="200" step="0.1" value="108" id="br_close" oninput="recalc()"><span class="val" id="br_close_v">108.0</span></div>
+      <div class="slider-row"><span style="width:90px">KC Upper</span><input type="range" min="50" max="200" step="0.1" value="106" id="br_kcu" oninput="recalc()"><span class="val" id="br_kcu_v">106.0</span></div>
+      <div class="slider-row"><span style="width:90px">KC Lower</span><input type="range" min="50" max="200" step="0.1" value="94" id="br_kcl" oninput="recalc()"><span class="val" id="br_kcl_v">94.0</span></div>
+      
+      <div class="formula">score<sub>atr</sub> = 0.4 if ATR &gt; 0 else 0  [constant regime bonus]</div>
+      <div class="slider-row"><span style="width:90px">ATR 14</span><input type="range" min="0" max="5" step="0.1" value="1.5" id="br_atr" oninput="recalc()"><span class="val" id="br_atr_v">1.5</span></div>
+      
+      <div class="formula">score<sub>squeeze</sub> = clamp( (1 − kc_upper/bb_upper) × 3 )  if kc_upper &lt; bb_upper</div>
+      <div class="slider-row"><span style="width:90px">BB Upper</span><input type="range" min="50" max="200" step="0.1" value="112" id="br_bbu" oninput="recalc()"><span class="val" id="br_bbu_v">112.0</span></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Weighted aggregation</div>
+      <div class="formula" style="margin-bottom: 20px;">w = {kc_breakout: 0.60, atr_regime: 0.15, squeeze: 0.25}</div>
+      <div id="br_scores"></div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--border)" id="br_final"></div>
+    </div>
+  </div>
+
+  <!-- COMPOSITE -->
+  <div id="tab-composite" class="panel">
+    <div class="section">
+      <div class="section-title">Child strategy scores</div>
+      <div class="slider-row"><span style="width:120px">Trend score</span><input type="range" min="-1" max="1" step="0.01" value="0.42" id="c_trend" oninput="recalc()"><span class="val" id="c_trend_v">+0.42</span></div>
+      <div class="slider-row"><span style="width:120px">MR score</span><input type="range" min="-1" max="1" step="0.01" value="0.30" id="c_mr" oninput="recalc()"><span class="val" id="c_mr_v">+0.30</span></div>
+      <div class="slider-row"><span style="width:120px">Breakout score</span><input type="range" min="-1" max="1" step="0.01" value="0.55" id="c_brk" oninput="recalc()"><span class="val" id="c_brk_v">+0.55</span></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Base weights (normalized to 90%)</div>
+      <div class="formula">w_norm<sub>i</sub> = (w<sub>i</sub> / Σw) × 0.90</div>
+      <div class="slider-row"><span style="width:120px">w_trend</span><input type="range" min="0" max="1" step="0.01" value="0.46" id="cw_trend" oninput="recalc()"><span class="val" id="cw_trend_v">0.46</span></div>
+      <div class="slider-row"><span style="width:120px">w_mr</span><input type="range" min="0" max="1" step="0.01" value="0.35" id="cw_mr" oninput="recalc()"><span class="val" id="cw_mr_v">0.35</span></div>
+      <div class="slider-row"><span style="width:120px">w_breakout</span><input type="range" min="0" max="1" step="0.01" value="0.45" id="cw_brk" oninput="recalc()"><span class="val" id="cw_brk_v">0.45</span></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Regime modifier</div>
+      <select id="c_regime" onchange="recalc()" style="font-family:var(--font-sans);font-size:13px;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);cursor:pointer;outline:none">
+        <option value="NORMAL">Normal</option>
+        <option value="HIGH_VOL">HIGH_VOL (all weights × 0.6)</option>
+        <option value="RANGING">RANGING (trend weight × 0.5)</option>
+      </select>
+      <div style="margin-top:16px">
+        <div class="slider-row"><span style="width:120px">HTF bias</span>
+          <select id="c_htf" onchange="recalc()" style="font-family:var(--font-sans);font-size:13px;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);cursor:pointer">
+            <option value="HOLD">HOLD (±0)</option>
+            <option value="BUY">BUY (+0.15)</option>
+            <option value="SELL">SELL (−0.15)</option>
+          </select>
+        </div>
+        <div class="slider-row"><span style="width:120px">Netflow</span>
+          <select id="c_nf" onchange="recalc()" style="font-family:var(--font-sans);font-size:13px;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);cursor:pointer">
+            <option value="NONE">None (±0)</option>
+            <option value="NEG">Negative (+0.10)</option>
+            <option value="POS">Positive (−0.10)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Decision thresholds</div>
+      <div class="formula">BUY if score ≥ buy_thr | SELL if score ≤ sell_thr | else HOLD</div>
+      <div class="slider-row"><span style="width:100px">Buy threshold</span><input type="range" min="0.05" max="0.6" step="0.01" value="0.20" id="c_buy_thr" oninput="recalc()"><span class="val" id="c_buy_thr_v">+0.20</span></div>
+      <div class="slider-row"><span style="width:100px">Sell threshold</span><input type="range" min="-0.6" max="-0.05" step="0.01" value="-0.20" id="c_sell_thr" oninput="recalc()"><span class="val" id="c_sell_thr_v">-0.20</span></div>
+    </div>
+    <div id="comp_final"></div>
+  </div>
+
+  <!-- OUTPUT METRICS ALWAYS VISIBLE -->
+  <div id="output_section" class="section" style="margin-top:1rem">
+    <div class="section-title">Final output</div>
+    <div class="grid" id="output_grid"></div>
+    <div id="score_bar_wrap" style="margin-top:20px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Score position on [−1, +1]</div>
+      <div style="position:relative;height:24px;background:var(--surface-0);border-radius:4px;overflow:visible; border: 1px solid var(--border)">
+        <div id="score_needle" style="position:absolute;top:-4px;width:3px;height:32px;background:var(--text-primary);border-radius:2px;transition:left .2s; z-index: 10"></div>
+        <div id="buy_zone" style="position:absolute;top:0;height:100%;background:var(--bg-success);border-radius:0 4px 4px 0;opacity:.7;transition:left .2s,width .2s"></div>
+        <div id="sell_zone" style="position:absolute;top:0;height:100%;background:var(--bg-danger);border-radius:4px 0 0 4px;opacity:.7;transition:width .2s"></div>
+        <div style="position:absolute;width:1px;height:100%;left:50%;background:var(--border-stronger)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:6px; font-family:var(--font-mono)"><span>−1</span><span>0</span><span>+1</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const clamp=(v,lo=-1,hi=1)=>Math.max(lo,Math.min(hi,v));
+const g=id=>parseFloat(document.getElementById(id).value);
+const gs=id=>document.getElementById(id).value;
+const sv=(id,v)=>document.getElementById(id).textContent=v;
+
+function linearScore(val,center,scale,invert=false){
+  let r=(val-center)/scale; if(invert)r=-r; return clamp(r);
+}
+function threshScore(val,bull,bear,max=1){
+  if(val>=bull)return max; if(val<=bear)return -max;
+  const mid=(bull+bear)/2,span=(bull-bear)/2;
+  return clamp((val-mid)/span);
+}
+function emaCross(fast,slow){
+  if(!slow)return 0; return clamp((fast-slow)/Math.abs(slow)*20);
+}
+
+function renderScores(elId,rows){
+  const el=document.getElementById(elId); if(!el)return;
+  el.innerHTML=rows.map(r=>{
+    const pct=Math.round((r.s+1)/2*100);
+    const bc=r.s>0?'var(--text-success)':r.s<0?'var(--text-danger)':'var(--text-muted)';
+    const contrib=(r.s*r.w).toFixed(3);
+    return `<div class="row-score">
+      <span class="name">${r.name}</span>
+      <div class="bar-track" style="flex:1"><div class="bar-fill" style="width:${pct}%;background:${bc}"></div></div>
+      <span class="sval">${r.s>=0?'+':''}${r.s.toFixed(3)}</span>
+      <span class="weight">×${r.w.toFixed(2)}</span>
+      <span class="contrib" style="color:${parseFloat(contrib)>=0?'var(--text-success)':'var(--text-danger)'}">${parseFloat(contrib)>=0?'+':''}${contrib}</span>
+    </div>`;
+  }).join('')+'<div style="font-size:11px;color:var(--text-muted);margin-top:8px;text-align:right">score × weight = contribution</div>';
+}
+
+function renderFinal(elId,score,buyT,sellT){
+  const el=document.getElementById(elId); if(!el)return;
+  const dir=score>=buyT?'BUY':score<=sellT?'SELL':'HOLD';
+  const conf=Math.abs(score).toFixed(3);
+  el.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+    <span style="font-size:24px;font-weight:400;font-family:var(--font-sans); letter-spacing:-0.5px">${score>=0?'+':''}${score.toFixed(4)}</span>
+    <span class="tag ${dir.toLowerCase()}">${dir}</span>
+    <span style="font-size:12px;color:var(--text-muted)">confidence = |score| = ${conf}</span>
+  </div>`;
+}
+
+function updateOutputGrid(score,dir){
+  const bc=dir==='BUY'?'buy':dir==='SELL'?'sell':'hold';
+  document.getElementById('output_grid').innerHTML=`
+    <div class="metric"><p class="label">Final score</p><p class="num">${score>=0?'+':''}${score.toFixed(4)}</p></div>
+    <div class="metric"><p class="label">Direction</p><p class="num ${bc}">${dir}</p></div>
+    <div class="metric"><p class="label">Confidence</p><p class="num">${(Math.abs(score)*100).toFixed(1)}%</p></div>`;
+  const needle=document.getElementById('score_needle');
+  const pct=(score+1)/2*100;
+  needle.style.left=pct+'%';
+}
+
+function updateZones(buyT,sellT){
+  const bz=document.getElementById('buy_zone');
+  const sz=document.getElementById('sell_zone');
+  const bPct=(buyT+1)/2*100;
+  bz.style.left=bPct+'%';
+  bz.style.width=(100-bPct)+'%';
+  const sPct=(sellT+1)/2*100;
+  sz.style.width=sPct+'%';
+}
+
+let _trendScore=0.42,_mrScore=0.30,_brkScore=0.55;
+let _activeTab='trend';
+
+function recalc(){
+  // Sync display values
+  ['t_ema50','t_ema200','t_ema9','t_ema21','t_rsi','t_vol'].forEach(id=>{
+    const el=document.getElementById(id+'_v'); if(el)sv(id+'_v',parseFloat(g(id)).toFixed(1));
+  });
+  sv('t_macd_v', g('t_macd').toFixed(4));
+  sv('t_nf_v', g('t_nf').toFixed(0));
+  sv('mr_close_v', g('mr_close').toFixed(1));
+  sv('mr_bbu_v', g('mr_bbu').toFixed(1));
+  sv('mr_bbl_v', g('mr_bbl').toFixed(1));
+  sv('mr_rsi_v', g('mr_rsi').toFixed(0));
+  sv('mr_vwap_v', g('mr_vwap').toFixed(1));
+  sv('br_close_v', g('br_close').toFixed(1));
+  sv('br_kcu_v', g('br_kcu').toFixed(1));
+  sv('br_kcl_v', g('br_kcl').toFixed(1));
+  sv('br_atr_v', g('br_atr').toFixed(1));
+  sv('br_bbu_v', g('br_bbu').toFixed(1));
+  sv('c_trend_v', (g('c_trend')>=0?'+':'')+g('c_trend').toFixed(2));
+  sv('c_mr_v', (g('c_mr')>=0?'+':'')+g('c_mr').toFixed(2));
+  sv('c_brk_v', (g('c_brk')>=0?'+':'')+g('c_brk').toFixed(2));
+  sv('cw_trend_v', g('cw_trend').toFixed(2));
+  sv('cw_mr_v', g('cw_mr').toFixed(2));
+  sv('cw_brk_v', g('cw_brk').toFixed(2));
+  sv('c_buy_thr_v', (g('c_buy_thr')>=0?'+':'')+g('c_buy_thr').toFixed(2));
+  sv('c_sell_thr_v', g('c_sell_thr').toFixed(2));
+
+  // ---- TREND ----
+  const wTrend={ema_trend:0.40,ema_fast:0.70,macd:0.60,rsi:0.45,volume:0.30,netflow:0.15};
+  const sTrend={
+    ema_trend: emaCross(g('t_ema50'), g('t_ema200')),
+    ema_fast:  emaCross(g('t_ema9'),  g('t_ema21')),
+    macd:      linearScore(g('t_macd'), 0, 0.002),
+    rsi:       threshScore(g('t_rsi'), 52, 48),
+    volume:    linearScore(g('t_vol'), 1.0, 1.0),
+    netflow:   linearScore(g('t_nf'), 0, 100, true),
+  };
+  const tW=Object.values(wTrend).reduce((a,b)=>a+b,0);
+  let tScore=Object.keys(sTrend).reduce((a,k)=>a+sTrend[k]*wTrend[k],0)/tW;
+  tScore=clamp(tScore);
+  _trendScore=tScore;
+  const tBuy=0.35,tSell=-0.35;
+  renderScores('trend_scores', Object.keys(sTrend).map(k=>({name:k,s:sTrend[k],w:wTrend[k]})));
+  renderFinal('trend_final', tScore, tBuy, tSell);
+
+  // ---- MEAN REVERSION ----
+  const mrClose=g('mr_close'), bbu=g('mr_bbu'), bbl=g('mr_bbl');
+  const bbMid=(bbu+bbl)/2, bbW=bbu-bbl;
+  const sMR={
+    bb_position: bbW>0 ? clamp(-(mrClose-bbMid)/(bbW/2)) : 0,
+    rsi:         clamp((50-g('mr_rsi'))/20),
+    vwap:        clamp(-(mrClose-g('mr_vwap'))/Math.abs(g('mr_vwap'))*50),
+  };
+  let mrScore=Object.values(sMR).reduce((a,b)=>a+b,0)/3;
+  mrScore=clamp(mrScore);
+  _mrScore=mrScore;
+  const mrBuy=0.35,mrSell=-0.35;
+  renderScores('mr_scores', Object.keys(sMR).map(k=>({name:k,s:sMR[k],w:1/3})));
+  renderFinal('mr_final', mrScore, mrBuy, mrSell);
+
+  // ---- BREAKOUT ----
+  const brClose=g('br_close'), kcu=g('br_kcu'), kcl=g('br_kcl');
+  const kcMid=(kcu+kcl)/2, kcHalf=(kcu-kcl)/2;
+  const brBbu=g('br_bbu');
+  const sBrk={
+    kc_breakout: kcHalf>0 ? clamp((brClose-kcMid)/kcHalf) : 0,
+    atr_regime:  g('br_atr')>0 ? 0.4 : 0,
+    squeeze:     (kcu<brBbu && brBbu>0) ? clamp((1-kcu/brBbu)*3) : 0,
+  };
+  const wBrk={kc_breakout:0.60,atr_regime:0.15,squeeze:0.25};
+  const brkTotalW=Object.values(wBrk).reduce((a,b)=>a+b,0);
+  let brkScore=Object.keys(sBrk).reduce((a,k)=>a+sBrk[k]*wBrk[k],0)/brkTotalW;
+  brkScore=clamp(brkScore);
+  _brkScore=brkScore;
+  const brkBuy=0.35,brkSell=-0.35;
+  renderScores('br_scores', Object.keys(sBrk).map(k=>({name:k,s:sBrk[k],w:wBrk[k]})));
+  renderFinal('br_final', brkScore, brkBuy, brkSell);
+
+  // ---- COMPOSITE ----
+  let wT=g('cw_trend'), wM=g('cw_mr'), wB=g('cw_brk');
+  const totW=wT+wM+wB;
+  if(totW>0){wT=wT/totW*0.90; wM=wM/totW*0.90; wB=wB/totW*0.90;}
+  const regime=gs('c_regime');
+  let wTr=wT,wMr=wM,wBr=wB;
+  if(regime==='HIGH_VOL'){wTr*=0.6;wMr*=0.6;wBr*=0.6;}
+  else if(regime==='RANGING'){wTr*=0.5;}
+  let cScore=g('c_trend')*wTr + g('c_mr')*wMr + g('c_brk')*wBr;
+  const htf=gs('c_htf'); const nf=gs('c_nf');
+  if(htf==='BUY')cScore+=0.15; else if(htf==='SELL')cScore-=0.15;
+  if(nf==='NEG')cScore+=0.10; else if(nf==='POS')cScore-=0.10;
+  cScore=clamp(cScore);
+  const cBuy=g('c_buy_thr'), cSell=g('c_sell_thr');
+  const cDir=cScore>=cBuy?'BUY':cScore<=cSell?'SELL':'HOLD';
+  document.getElementById('comp_final').innerHTML=`
+    <div class="section">
+      <div class="section-title">Effective weights after normalization + regime</div>
+      <div class="formula">trend: ${wTr.toFixed(3)} | mr: ${wMr.toFixed(3)} | breakout: ${wBr.toFixed(3)}</div>
+      <div class="formula">weighted_base = ${(g('c_trend')*wTr+g('c_mr')*wMr+g('c_brk')*wBr).toFixed(4)}
+htf_adj: ${htf==='BUY'?'+0.15':htf==='SELL'?'−0.15':'0'}
+netflow_adj: ${nf==='NEG'?'+0.10':nf==='POS'?'−0.10':'0'}
+final = ${cScore.toFixed(4)}</div>
+    </div>`;
+
+  // Determine which tab is active for output
+  const activeTab=_activeTab;
+  let displayScore=cScore,displayDir=cDir,displayBuy=cBuy,displaySell=cSell;
+  if(activeTab==='trend'){displayScore=tScore;displayDir=tScore>=tBuy?'BUY':tScore<=tSell?'SELL':'HOLD';displayBuy=tBuy;displaySell=tSell;}
+  else if(activeTab==='mr'){displayScore=mrScore;displayDir=mrScore>=mrBuy?'BUY':mrScore<=mrSell?'SELL':'HOLD';displayBuy=mrBuy;displaySell=mrSell;}
+  else if(activeTab==='brk'){displayScore=brkScore;displayDir=brkScore>=brkBuy?'BUY':brkScore<=brkSell?'SELL':'HOLD';displayBuy=brkBuy;displaySell=brkSell;}
+  updateOutputGrid(displayScore,displayDir);
+  updateZones(displayBuy,displaySell);
+}
+
+function switchTab(name){
+  _activeTab=name;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelector(`.tab[onclick="switchTab('${name}')"]`).classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+  recalc();
+}
+
+recalc();
+</script>
+</body>
+</html>

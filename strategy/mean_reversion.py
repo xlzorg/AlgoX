@@ -18,8 +18,8 @@ class MeanReversionStrategy(BaseStrategy):
     def __init__(
         self,
         *,
-        buy_threshold: float = 0.55,
-        sell_threshold: float = -0.55,
+        buy_threshold: float = 0.35,
+        sell_threshold: float = -0.35,
     ) -> None:
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold

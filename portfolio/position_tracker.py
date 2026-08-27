@@ -88,10 +88,16 @@ class PositionTracker:
         timeframe: str = "",
         high: float | None = None,
         low: float | None = None,
+        is_raw_tick: bool = False,
     ) -> list[Signal]:
         signals: list[Signal] = []
-        px_high = high if high is not None else current_price
-        px_low = low if low is not None else current_price
+        if is_raw_tick:
+            # Hanya pakai harga tick, jangan andalkan high/low
+            px_high = current_price
+            px_low = current_price
+        else:
+            px_high = high if high is not None else current_price
+            px_low = low if low is not None else current_price
 
         for position in self.open_positions():
             if position.symbol != symbol:

@@ -79,6 +79,11 @@ class TradingEngine:
         self.auto_manage_positions = settings.auto_manage_positions
         self._bootstrap_complete = asyncio.Event()
         self._file_logger = get_file_logger("trading_engine")
+        self._pending_entries: dict[str, dict] = {}   # symbol → pending entry data
+        # di __init__
+        self._task_restart_counts: dict[str, int] = {}
+        self._max_task_restarts: int = 5
+        self._restart_backoff_base: float = 2.0   # detik
 
 
     @property
@@ -110,6 +115,7 @@ class TradingEngine:
             ]
             self._rest_feed = BinanceRestFeed()
             self._running = True
+            self._task_restart_counts.clear()
             self._started_at = time.monotonic()
             self._bootstrap_complete.clear()
             await self._restore_open_positions()
@@ -120,7 +126,7 @@ class TradingEngine:
             ]
             self._tasks.append(asyncio.create_task(self._bootstrap_history(), name="binance-rest-bootstrap"))
             self._tasks.append(asyncio.create_task(self._run_db_writer(), name="db-writer"))
-            self._tasks.append(asyncio.create_task(self._run_walk_forward(), name="walk-forward-evaluator"))
+            # self._tasks.append(asyncio.create_task(self._run_walk_forward(), name="walk-forward-evaluator"))
 
             for task in self._tasks:
                 logger.info("Started task: %s", task.get_name())
@@ -128,13 +134,109 @@ class TradingEngine:
 
     def _task_done(self, task: asyncio.Task) -> None:
         name = task.get_name()
+
         if task.cancelled():
             logger.warning("Task cancelled: %s", name)
-        elif task.exception():
-            logger.error("Task failed: %s – %s", name, task.exception())
-        else:
+            return
+
+        exc = task.exception()
+        if exc is None:
             logger.info("Task finished normally: %s", name)
-       
+            return
+
+        # Task gagal
+        logger.error("Task failed: %s – %s", name, exc)
+
+        if not self._running:
+            return
+
+        # Hanya restart task kritis
+        critical_prefixes = ("feed:", "db-writer")
+        is_critical = any(name.startswith(p) for p in critical_prefixes)
+
+        if not is_critical:
+            logger.warning("Non-critical task died (%s). Not restarting.", name)
+            return
+
+        # Hitung berapa kali sudah di-restart
+        count = self._task_restart_counts.get(name, 0) + 1
+        self._task_restart_counts[name] = count
+
+        if count > self._max_task_restarts:
+            logger.critical(
+                "Task %s failed %d times. Hard-stopping engine.",
+                name, count,
+            )
+            # Jadwalkan stop di event loop (karena kita di dalam callback)
+            asyncio.create_task(self.stop())
+            return
+
+        backoff = self._restart_backoff_base * (2 ** (count - 1))
+        logger.warning(
+            "Scheduling restart of %s in %.1fs (attempt %d/%d)",
+            name, backoff, count, self._max_task_restarts,
+        )
+        asyncio.create_task(self._restart_task(name, backoff))
+
+    async def _restart_task(self, name: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+
+        if not self._running:
+            logger.info("Engine stopped – skip restart of %s", name)
+            return
+
+        logger.info("Restarting task: %s", name)
+
+        try:
+            if name.startswith("feed:"):
+                # Cari class feed yang sesuai
+                feed_cls_name = name.split(":", 1)[1]
+                feed = next(
+                    (f for f in self.feeds if f.__class__.__name__ == feed_cls_name),
+                    None,
+                )
+                if feed is None:
+                    # Buat ulang feed jika hilang
+                    if feed_cls_name == "BinanceWebSocketFeed":
+                        feed = BinanceWebSocketFeed(
+                            symbols=self.symbols,
+                            timeframes=self.timeframes,
+                        )
+                        self.feeds.append(feed)
+                    elif feed_cls_name == "CoinGeckoFeed":
+                        feed = CoinGeckoFeed()
+                        self.feeds.append(feed)
+                    else:
+                        logger.error("Unknown feed type for restart: %s", feed_cls_name)
+                        return
+
+                new_task = asyncio.create_task(
+                    self._run_feed(feed),
+                    name=name,
+                )
+
+            elif name == "db-writer":
+                new_task = asyncio.create_task(
+                    self._run_db_writer(),
+                    name=name,
+                )
+
+            else:
+                logger.error("No restart handler for task: %s", name)
+                return
+
+            # Ganti task lama di list
+            self._tasks = [t for t in self._tasks if t.get_name() != name]
+            self._tasks.append(new_task)
+            new_task.add_done_callback(self._task_done)
+
+            logger.info("Task %s successfully restarted", name)
+
+        except Exception as e:
+            logger.exception("Failed to restart task %s: %s", name, e)
+            # Kalau restart sendiri gagal, anggap sebagai failure lagi
+            self._task_restart_counts[name] = self._task_restart_counts.get(name, 0) + 1
+        
 
     async def switch_timeframe(self, timeframe: str) -> None:
         allowed = {"1m", "5m", "15m", "1h"}
@@ -224,19 +326,64 @@ class TradingEngine:
             logger.warning("Binance REST bootstrap unavailable: %s", exc)
             self._bootstrap_complete.set()
 
+    async def _publish_hold_decision(self, candle: Candle, reason: str = "NON_PRIMARY_TF") -> None:
+        decision_event = {
+            "type": "candle_decision",
+            "ts": candle.open_time,
+            "payload": {
+                "candle_close": candle.close,
+                "symbol": candle.symbol,
+                "timeframe": candle.timeframe,
+                "direction": "HOLD",
+                "confidence": 0.0,
+                "regime": None,
+                "risk_status": reason,
+                "rejection_reason": reason,
+            },
+        }
+        await self.event_bus.publish(decision_event)
+
+    async def _try_fill_pending_entry(self, symbol: str, price: float) -> None:
+        pending = self._pending_entries.pop(symbol, None)
+        if pending is None:
+            return
+
+        intent: OrderIntent = pending["intent"]
+        signal: Signal = pending["signal"]
+
+        self._file_logger.info(
+            "FILLING PENDING ENTRY %s %s at next price=%.2f (signal was on closed candle)",
+            symbol, intent.direction, price,
+        )
+
+        fill = await self.paper_broker.submit(intent, price=price, order_type="MARKET")
+        if fill is None:
+            self._file_logger.warning("Pending entry submit returned None for %s", symbol)
+            return
+
+        self.portfolio_manager.update(
+            fill,
+            stop_loss_price=intent.stop_loss_price,
+            tp1_price=intent.tp1_price,
+            tp2_price=intent.tp2_price,
+        )
+
+        journal_entry = self.portfolio_manager.journal.record(signal, intent, fill)
+        await self.event_bus.publish(fill)
+        if journal_entry:
+            await self.event_bus.publish(journal_entry)
+
     async def _run_feed(self, feed: BaseFeed) -> None:
         await feed.connect()
         logger.info("Feed connected: %s", feed.__class__.__name__)
         async for event in feed.events():
-            logger.info("ENGINE received event type=%s running=%s", type(event).__name__, self._running)
             if not self._running:
                 logger.warning("Engine not running – dropping event")
                 return
 
             try:
                 if isinstance(event, dict) and event.get("event_type") == "trade":
-                    logger.debug("Trade tick: %s", event.get("symbol"))
-                    await self._on_tick(str(event["symbol"]), float(event["price"]), None, high=None, low=None,)
+                    await self._on_tick(str(event["symbol"]), float(event["price"]), None, high=None, low=None, is_raw_tick=True)
                 elif isinstance(event, Candle):
                     logger.info(
                         "Candle event: %s %s closed=%s close=%.2f t=%s",
@@ -269,10 +416,12 @@ class TradingEngine:
                 if hasattr(feed, "events_queue") and hasattr(feed.events_queue, "task_done"):
                     feed.events_queue.task_done()
 
-    async def _on_tick(self, symbol: str, price: float, timeframe: str | None, high: float | None = None, low: float | None = None,) -> None:
+    async def _on_tick(self, symbol: str, price: float, timeframe: str | None, high: float | None = None, low: float | None = None, is_raw_tick: bool = False,) -> None:
         self.portfolio_manager.mark_price(symbol, price)
         if self.auto_manage_positions:
-            await self._execute_exits(symbol, price, timeframe, high=high, low=low,)
+            await self._execute_exits(symbol, price, timeframe, high=high, low=low, is_raw_tick=is_raw_tick,)
+
+        await self._try_fill_pending_entry(symbol, price)
 
     async def _on_candle_closed(self, candle: Candle) -> None:
         logger.info("=== ENTER _on_candle_closed %s %s ===", candle.symbol, candle.timeframe)
@@ -282,12 +431,11 @@ class TradingEngine:
             self.market_store.append(candle)
             return
 
+        settings = get_settings()
+        primary_tf = settings.primary_tf
+
         # ── Auto-exits on this closed candle ─────────────────────────────
-        just_exited = False
-        if self.auto_manage_positions and await self._execute_exits(
-            candle.symbol, candle.close, candle.timeframe, high=candle.high, low=candle.low
-        ):
-            just_exited = True
+
 
         # ── Indicators ───────────────────────────────────────────────────
         logger.info("ON_CLOSED enter %s %s", candle.symbol, candle.timeframe)
@@ -311,6 +459,18 @@ class TradingEngine:
 
         self._latest_indicators.setdefault(candle.symbol, {})[candle.timeframe] = snapshot
         await self.event_bus.publish(snapshot)
+
+
+        if candle.timeframe!= primary_tf:
+            logger.info(
+                "non-Primary TF Closed (%s) → indicators updated, skip signal generation",
+                candle.timeframe,
+            )
+            
+            await self._publish_hold_decision(candle, reason="NON_PRIMARY_TF")
+            return
+
+        logger.info("PRIMARY TF closed → running full strategy evaluation")
 
         # ── Current position (if any) ────────────────────────────────────
         current_position = next(
@@ -346,12 +506,10 @@ class TradingEngine:
             )
 
         self._file_logger.info(
-            "POST-STRATEGY %s %s | direction=%s | just_exited=%s | will_run_risk=%s",
+            "POST-STRATEGY %s %s | direction=%s", 
             candle.symbol,
             candle.timeframe,
             signal.direction,
-            just_exited,
-            (not just_exited and signal.direction in ("BUY", "SELL")),
         )
 
         # Always publish the signal (even HOLD / error)
@@ -365,106 +523,147 @@ class TradingEngine:
         tp1 = None
         tp2 = None
 
-        if not just_exited:
-            # ── EXIT signal from strategy ────────────────────────────────
-            if signal.direction == "EXIT" and current_position is not None:
-                self._file_logger.info(
-                    "Strategy triggered EXIT for %s due to trend reversal.",
-                    candle.symbol,
+        # ── EXIT signal from strategy ────────────────────────────────
+        if signal.direction == "EXIT" and current_position is not None:
+            self._file_logger.info(
+                "Strategy triggered EXIT for %s due to trend reversal.",
+                candle.symbol,
+            )
+            # Sanity check
+            if current_position.status != "OPEN":
+                self._file_logger.warning(
+                    "EXIT ignored – position %s already %s",
+                    current_position.position_uuid, current_position.status,
                 )
-                intent = OrderIntent(
-                    approved=True,
-                    signal_uuid=signal.signal_uuid,
-                    symbol=candle.symbol,
-                    direction="SELL" if current_position.side == "LONG" else "BUY",
-                    quantity=current_position.quantity,
-                    entry_price=candle.close,
-                )
-                risk_status = "EXIT_TRIGGERED"
-                await self.event_bus.publish(intent)
+                return  # atau return dari blok ini
 
-                fill = await self.paper_broker.submit(
-                    intent, price=candle.close, order_type="MARKET"
+            if current_position.quantity <= 0:
+                self._file_logger.warning(
+                    "EXIT ignored – invalid quantity %.6f for %s",
+                    current_position.quantity, current_position.symbol,
                 )
-                if fill is not None:
-                    self.portfolio_manager.update(fill)
-                    if hasattr(self.portfolio_manager.journal, "record_exit"):
-                        journal_entry = self.portfolio_manager.journal.record_exit(
-                            current_position, fill, signal
-                        )
-                        if journal_entry:
-                            await self.event_bus.publish(journal_entry)
-                    await self.event_bus.publish(fill)
+                return
 
-            # ── Standard ENTRY (BUY / SELL) ──────────────────────────────
-            elif signal.direction in ("BUY", "SELL"):
-                intent = self.risk_guard.evaluate(
-                    signal,
-                    {
-                        "entry_price": candle.close,
-                        "atr": snapshot.atr_14 or 0.0,
-                        "balance_usdt": self.portfolio_manager.summary()["balance_usdt"],
-                        "open_positions": self.portfolio_manager.summary()["open_positions"],
-                    },
-                    snapshot,
-                )
+            intent = OrderIntent(
+                approved=True,
+                signal_uuid=signal.signal_uuid,
+                symbol=candle.symbol,
+                direction="SELL" if current_position.side == "LONG" else "BUY",
+                quantity=current_position.quantity,
+                entry_price=candle.close,
+            )
 
-                if intent.approved:
-                    risk_status = "APPROVED"
-                    self._file_logger.info(
-                        "RiskGuard APPROVED: %s %s qty=%.6f entry=%.2f sl=%.2f tp1=%.2f",
-                        intent.symbol,
-                        intent.direction,
-                        intent.quantity,
-                        intent.entry_price or 0,
-                        intent.stop_loss_price or 0,
-                        intent.tp1_price or 0,
+            # Optional: log audit
+            self._file_logger.info(
+                "STRATEGY EXIT approved | %s %s qty=%.6f",
+                current_position.symbol, current_position.side, current_position.quantity,
+            )
+            risk_status = "EXIT_TRIGGERED"
+            await self.event_bus.publish(intent)
+
+            fill = await self.paper_broker.submit(
+                intent, price=candle.close, order_type="MARKET"
+            )
+            if fill is not None:
+                self.portfolio_manager.update(fill)
+                if hasattr(self.portfolio_manager.journal, "record_exit"):
+                    journal_entry = self.portfolio_manager.journal.record_exit(
+                        current_position, fill, signal
                     )
-                else:
+                    if journal_entry:
+                        await self.event_bus.publish(journal_entry)
+                await self.event_bus.publish(fill)
+
+        # ── Standard ENTRY (BUY / SELL) ──────────────────────────────
+        elif signal.direction in ("BUY", "SELL"):
+            intent = self.risk_guard.evaluate(
+                signal,
+                {
+                    "entry_price": candle.close,
+                    "atr": snapshot.atr_14 or 0.0,
+                    "balance_usdt": self.portfolio_manager.summary()["balance_usdt"],
+                    "open_positions": self.portfolio_manager.summary()["open_positions"],
+                },
+                snapshot,
+            )
+
+            if intent.approved:
+                risk_status = "APPROVED"
+                self._file_logger.info(
+                    "RiskGuard APPROVED: %s %s qty=%.6f entry=%.2f sl=%.2f tp1=%.2f",
+                    intent.symbol,
+                    intent.direction,
+                    intent.quantity,
+                    intent.entry_price or 0,
+                    intent.stop_loss_price or 0,
+                    intent.tp1_price or 0,
+                )
+            else:
+                risk_status = "REJECTED"
+                rejection_reason = intent.rejection_reason
+                self._file_logger.info(
+                    "RiskGuard REJECTED: %s %s reason=%s | balance_usdt=%.2f atr=%.4f entry=%.2f",
+                    intent.symbol,
+                    intent.direction,
+                    intent.rejection_reason,
+                    self.portfolio_manager.summary().get("balance_usdt", 0),
+                    snapshot.atr_14 or 0,
+                    candle.close,
+                )
+
+            stop_loss = intent.stop_loss_price
+            tp1 = intent.tp1_price
+            tp2 = intent.tp2_price
+
+            await self.event_bus.publish(intent)
+
+            if intent.approved:
+                if intent.stop_loss_price is None or intent.tp1_price is None:
+                    intent.approved = False
+                    intent.rejection_reason = "missing_sl_or_tp"
                     risk_status = "REJECTED"
                     rejection_reason = intent.rejection_reason
-                    self._file_logger.info(
-                        "RiskGuard REJECTED: %s %s reason=%s | balance_usdt=%.2f atr=%.4f entry=%.2f",
-                        intent.symbol,
-                        intent.direction,
-                        intent.rejection_reason,
-                        self.portfolio_manager.summary().get("balance_usdt", 0),
-                        snapshot.atr_14 or 0,
-                        candle.close,
+                    self._file_logger.warning(
+                        "RiskGuard forced REJECT: missing SL/TP for %s", intent.symbol
                     )
+                else:
+                    risk_status = "APPROVED"
+                    # ✅ JANGAN submit sekarang. Simpan sebagai pending (Issue 2)
+                    self._pending_entries[candle.symbol] = {
+                        "intent": intent,
+                        "signal": signal,
+                        "created_at": candle.open_time,
+                    }
+                    self._file_logger.info(
+                        "ENTRY QUEUED (pending next price) %s %s qty=%.6f",
+                        intent.symbol, intent.direction, intent.quantity,
+                    )
+            else:
+                risk_status = "REJECTED"
+                rejection_reason = intent.rejection_reason
 
-                stop_loss = intent.stop_loss_price
-                tp1 = intent.tp1_price
-                tp2 = intent.tp2_price
-
-                await self.event_bus.publish(intent)
-
-                if intent.approved:
-                    if intent.stop_loss_price is None or intent.tp1_price is None:
-                        intent.approved = False
-                        intent.rejection_reason = "missing_sl_or_tp"
-                        risk_status = "REJECTED"
-                        rejection_reason = intent.rejection_reason
-                        self._file_logger.warning(
-                            "RiskGuard forced REJECT: missing SL/TP for %s", intent.symbol
-                        )
-                    self._file_logger.info("ABOUT TO SUBMIT: approved=%s price=%s qty=%s", 
-                                intent.approved, candle.close, intent.quantity)
-                    fill = await self.paper_broker.submit(intent, price=candle.close)
-                    self._file_logger.info("SUBMIT RESULT: fill is None = %s", fill is None)
-                    if fill is not None:
-                        self._file_logger.info("FILL CREATED: %s %s qty=%.6f", fill.symbol, fill.side, fill.filled_qty)
-                        self.portfolio_manager.update(
-                            fill,
-                            stop_loss_price=intent.stop_loss_price,
-                            tp1_price=intent.tp1_price,
-                            tp2_price=intent.tp2_price,
-                        )
-                        journal_entry = self.portfolio_manager.journal.record(
-                            signal, intent, fill
-                        )
-                        await self.event_bus.publish(fill)
-                        await self.event_bus.publish(journal_entry)
+            stop_loss = intent.stop_loss_price
+            tp1 = intent.tp1_price
+            tp2 = intent.tp2_price
+            await self.event_bus.publish(intent)
+                    
+ #               self._file_logger.info("ABOUT TO SUBMIT: approved=%s price=%s qty=%s", 
+ #                           intent.approved, candle.close, intent.quantity)
+ #               fill = await self.paper_broker.submit(intent, price=candle.close)
+ #               self._file_logger.info("SUBMIT RESULT: fill is None = %s", fill is None)
+ #               if fill is not None:
+ #                   self._file_logger.info("FILL CREATED: %s %s qty=%.6f", fill.symbol, fill.side, fill.filled_qty)
+ #                   self.portfolio_manager.update(
+ #                       fill,
+ #                       stop_loss_price=intent.stop_loss_price,
+ #                       tp1_price=intent.tp1_price,
+ #                       tp2_price=intent.tp2_price,
+ #                   )
+ #                   journal_entry = self.portfolio_manager.journal.record(
+ #                       signal, intent, fill
+ #                   )
+ #                   await self.event_bus.publish(fill)
+ #                   await self.event_bus.publish(journal_entry)
 
         # ── Always emit candle_decision (frontend + history) ─────────────
         decision_event = {
@@ -488,8 +687,8 @@ class TradingEngine:
         }
         await self.event_bus.publish(decision_event)
 
-    async def _execute_exits(self, symbol: str, price: float, timeframe: str | None, high: float | None = None, low: float | None = None,) -> bool:
-        exits = self.portfolio_manager.check_exits(symbol, price, timeframe or "", high=high, low=low)
+    async def _execute_exits(self, symbol: str, price: float, timeframe: str | None, high: float | None = None, low: float | None = None, is_raw_tick: bool = False,) -> bool:
+        exits = self.portfolio_manager.check_exits(symbol, price, timeframe or "", high=high, low=low, is_raw_tick=is_raw_tick,)
         self._file_logger.info("check_exits returned %d signals for %s @ %.2f", len(exits), symbol, price)
         if not exits:
             return False
@@ -503,7 +702,10 @@ class TradingEngine:
                 ),
                 None,
             )
-            if position is None:
+            if position is None or position.status != "OPEN":
+                continue
+            if position.quantity <= 0:
+                self._file_logger.warning("Skip exit – bad quantity on %s", position.position_uuid)
                 continue
 
             intent = OrderIntent(

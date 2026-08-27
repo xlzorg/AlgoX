@@ -28,6 +28,9 @@ class IndicatorSnapshot:
     bb_upper: float | None = None
     bb_mid: float | None = None
     bb_lower: float | None = None
+    bb_position: float | None = None
+    volume_ratio: float | None = None
+    squeeze: float | None = None
     rsi_14: float | None = None
     macd_line: float | None = None
     macd_signal: float | None = None

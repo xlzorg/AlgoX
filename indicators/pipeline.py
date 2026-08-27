@@ -68,12 +68,38 @@ class IndicatorPipeline:
         close = float(latest["close"])
         onchain = self.market_store.get_onchain(symbol)
         latest_onchain = onchain[-1] if onchain else None
+        # --- after you have bands, keltner, volume, close, etc. ---
+
+        # 1. Bollinger Band position (0 = lower band, 1 = upper band)
+        bb_upper = self._number(bands.get("upper"))
+        bb_lower = self._number(bands.get("lower"))
+        bb_position = None
+        if bb_upper is not None and bb_lower is not None and bb_upper != bb_lower:
+            bb_position = (close - bb_lower) / (bb_upper - bb_lower)
+
+        # 2. Volume ratio (current volume vs recent average)
+        vol_ma = frame["volume"].rolling(20, min_periods=10).mean().iloc[-1]
+        volume_ratio = None
+        if pd.notna(vol_ma) and vol_ma > 0:
+            volume_ratio = float(latest["volume"] / vol_ma)
+
+        # 3. Squeeze (Bollinger inside Keltner = squeeze)
+        kc_upper = self._number(keltner.get("upper"))
+        kc_lower = self._number(keltner.get("lower"))
+        squeeze = None
+        if all(v is not None for v in (bb_upper, bb_lower, kc_upper, kc_lower)):
+            # Classic TTM squeeze style: 1.0 when BB is inside KC, else 0.0
+            # or a continuous version:
+            bb_width = bb_upper - bb_lower
+            kc_width = kc_upper - kc_lower
+            squeeze = bb_width / kc_width if kc_width > 0 else None
+        
         return IndicatorSnapshot(
             symbol=symbol.upper(), timeframe=timeframe, candle_time=int(latest["open_time"]), close=close,                 
             ema_9=self._number(ema.get(9)), ema_21=self._number(ema.get(21)),
             ema_50=self._number(ema.get(50)), ema_200=self._number(ema.get(200)),
             vwap=vwap_value, bb_upper=self._number(bands.get("upper")),
-            bb_mid=self._number(bands.get("middle")), bb_lower=self._number(bands.get("lower")),
+            bb_mid=self._number(bands.get("middle")), bb_lower=self._number(bands.get("lower")), bb_position=bb_position, volume_ratio=volume_ratio, squeeze=squeeze,
             rsi_14=self._number(rsi), macd_line=self._number(macd.get("line")),
             macd_signal=self._number(macd.get("signal")), macd_hist=self._number(macd.get("hist")),
             stoch_k=self._number(stochastic.get("k")), stoch_d=self._number(stochastic.get("d")),

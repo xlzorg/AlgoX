@@ -24,6 +24,9 @@ class IndicatorSnapshot(Base):
     bb_upper: Mapped[float | None] = mapped_column(Float)
     bb_mid: Mapped[float | None] = mapped_column(Float)
     bb_lower: Mapped[float | None] = mapped_column(Float)
+    bb_position: Mapped[float | None] = mapped_column(Float)      # ← tambah
+    volume_ratio: Mapped[float | None] = mapped_column(Float)     # ← tambah
+    squeeze: Mapped[float | None] = mapped_column(Float)          # ← tambah
     rsi_14: Mapped[float | None] = mapped_column(Float)
     macd_line: Mapped[float | None] = mapped_column(Float)
     macd_signal: Mapped[float | None] = mapped_column(Float)

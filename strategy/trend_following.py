@@ -18,15 +18,15 @@ class TrendFollowingStrategy(BaseStrategy):
         self,
         *,
         weights: Mapping[str, float] | None = None,
-        buy_threshold: float = 0.55,
-        sell_threshold: float = -0.55,
+        buy_threshold: float = 0.35,
+        sell_threshold: float = -0.35,
     ) -> None:
         # Configurable weights (will be normalized later)
         self.weights = dict(weights or {
             "ema_trend":   0.40,   # ema_50 vs ema_200
-            "ema_fast":    0.40,   # ema_9 vs ema_21
+            "ema_fast":    0.70,   # ema_9 vs ema_21
             "macd":        0.60,
-            "rsi":         0.25,
+            "rsi":         0.45,
             "volume":      0.30,
             "netflow":     0.15,
         })
@@ -98,7 +98,7 @@ class TrendFollowingStrategy(BaseStrategy):
             ),
             IndicatorScore(
                 "rsi",
-                threshold_score(rsi_14, bull_threshold=55, bear_threshold=45),
+                threshold_score(rsi_14, bull_threshold=52, bear_threshold=48),
                 self.weights["rsi"],
             ),
             IndicatorScore(

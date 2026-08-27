@@ -16,3 +16,69 @@ selanjutnya fix di prod running. system sukses membuka posisi namun dalam databa
 sepertinya masalahnya ada di bagian position
 
 setiap restart uvicorn, open position di frontend tidak terload
+
+
+22.31 25/08/2026
+di composit sebenrnya weight score udah bagus. dan di position tracker log juga terjadi beberapa exkesuki order. namun entah kenapa tidak masuk ke db dan tidak tertampil. juga loss terus sih.
+
+ada beberapa kondisi juga final score diatas 0.2 tapi tetap hold. dan itu timeframe 5m, mungkini multi fram atau apapun ini harus diperbaiki.
+
+kita coba solve juga permasalahn multiframe, karena saya mau buat dia jadi switch able.
+
+
+14.47 26/08/2026
+TRADING ENGINE ARCHITECTURE ISSUES — CRITICAL CONTEXT FOR AI
+
+You are reviewing a Python async trading engine (TradingEngine). The following are confirmed architectural problems. When generating fixes, suggestions, or new code for this engine, always respect these constraints:
+
+ISSUE 1 — Exit Fired at Candle Close Price (Critical)
+
+Problem: _execute_exits() is called inside _on_candle_closed() using candle.close as the price. Stop-loss and take-profit checks run against the final close, not against the actual prices that occurred during the candle.
+Can cause: SL/TP that should have triggered mid-candle are missed or executed at a worse/better price than reality. P&L calculations are inaccurate. Paper trading results are misleading.
+Key fix: Remove _execute_exits() from _on_candle_closed(). Exits must only be driven by _on_tick(). The closed candle path is for entries only.
+
+ISSUE 2 — Entry Filled at Candle Close (Lookahead Bias, Critical)
+
+Problem: After signal generation on a closed candle, the fill is submitted using price=candle.close. In reality the candle is already closed — that price is in the past and unreachable.
+Can cause: Overly optimistic paper results. Strategy appears profitable in simulation but fails in live trading because real fills happen at the next bar open, not the previous bar close.
+Key fix: Entry orders generated on candle close should be filled at the next candle's open price (or the next available tick price), not candle.close.
+
+ISSUE 3 — Dead Task Has No Recovery (Critical)
+
+Problem: Feed and DB writer tasks run as fire-and-forget asyncio.Task. If they crash, _task_done only logs the error. self._running stays True. The engine continues as if nothing happened.
+Can cause: Engine appears alive but is trading blind — no market data arriving, no fills being written. Silent data loss and missed signals.
+Key fix: Implement restart-with-backoff for critical tasks (feed, db-writer). If retries are exhausted, call await self.stop() to hard-halt the engine and surface the failure.
+
+ISSUE 4 — Raw Trade Tick Passes high=None, low=None to Exit Logic (Medium)
+
+Problem: Raw WebSocket trade ticks call _on_tick(symbol, price, None, high=None, low=None). Inside _execute_exits, check_exits receives no wick data. Wick-based SL detection is blind on this path.
+Can cause: SL/TP that depend on intra-candle high/low will not fire during raw tick events — only simple price-threshold exits will work.
+Key fix: For raw tick-level SL, use only the tick price as a direct threshold comparison. Do not rely on high/low for tick-based logic. Reserve wick checks for candle-close or forming-candle events.
+
+ISSUE 5 — EXIT Signal Bypasses All Quantity Validation (Medium)
+
+Problem: When the strategy emits an EXIT signal, an OrderIntent is manually constructed with approved=True and bypasses RiskGuard.evaluate(). Quantity is taken directly from the stored position without any sanity check.
+Can cause: Closing more quantity than actually held if position state is stale or corrupted. No audit trail through the normal risk path.
+Key fix: Add a minimum sanity check before submitting the exit — verify intent.quantity <= position.quantity and position.status == "OPEN". Consider routing exits through a lightweight guard even if the full RiskGuard is skipped.
+
+ISSUE 6 — Walk-Forward Is Actually Weight Rebalancing (Medium)
+
+Problem: _run_walk_forward / _evaluate_parameters_hook adjusts strategy weights based on rolling 30-day Sharpe and win rate. This is not walk-forward validation — it is online parameter tuning on live data.
+Can cause: Weights chase recent performance, which is noisy and lagged. Strategies can be over-penalized in drawdowns and over-rewarded in favorable regimes, creating instability. Also: true out-of-sample performance is never validated.
+Key fix: Either rename this correctly as _run_weight_rebalancer and accept its limitations, or implement true walk-forward separately — train on period A, validate on period B, roll forward before applying any weight change.
+
+GLOBAL RULES FOR THIS ENGINE:
+
+Exits are tick-driven only. Never exit on candle close price.
+Entries fill at next-open, not current-close.
+_on_candle_closed is for: indicator computation, signal generation, entry submission only.
+_on_tick is for: price marking, SL/TP exit checks only.
+Any critical async task that dies must attempt restart before halting the engine.
+
+
+
+
+17.26 26/08/2026
+
+kunci memang melengkapi beberapa indikator yang belum di attach. karean belum diattach valuenya 0. sehingga tidak mempush value  final score. 
+seerti netflow, exchange, onchain data, dll. kalo sudah, baru dites. kemudian dilihat apakah final score snagat terpengaruhi. kalo iya bererti kita bisa full test tuning. jika ok baru di accuracy test.
