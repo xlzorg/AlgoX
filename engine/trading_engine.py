@@ -239,7 +239,7 @@ class TradingEngine:
         
 
     async def switch_timeframe(self, timeframe: str) -> None:
-        allowed = {"1m", "5m", "15m", "1h"}
+        allowed = {"1m", "5m", "15m"}
         if timeframe not in allowed:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         was_running = self._running
@@ -525,9 +525,24 @@ class TradingEngine:
 
         # ── EXIT signal from strategy ────────────────────────────────
         if signal.direction == "EXIT" and current_position is not None:
+            # CRITICAL FIX #1: Respect minimum holding time before strategy EXIT signals
+            settings = get_settings()
+            current_time_sec = int(time.time())
+            position_age_sec = current_time_sec - (current_position.entry_time // 1000)  # entry_time in milliseconds
+            
+            if position_age_sec < settings.min_holding_time_sec:
+                self._file_logger.info(
+                    "Strategy EXIT rejected for %s – position too young: %.1fs < %.1fs",
+                    candle.symbol, position_age_sec, settings.min_holding_time_sec,
+                )
+                # Skip this exit, but allow hard stops to work (check_exits will still fire SL)
+                # Fall through to HOLD decision
+                await self._publish_hold_decision(candle, reason="POSITION_HOLDING_TIME_GATE")
+                return
+            
             self._file_logger.info(
-                "Strategy triggered EXIT for %s due to trend reversal.",
-                candle.symbol,
+                "Strategy triggered EXIT for %s due to trend reversal (age=%.1fs).",
+                candle.symbol, position_age_sec,
             )
             # Sanity check
             if current_position.status != "OPEN":
@@ -544,6 +559,8 @@ class TradingEngine:
                 )
                 return
 
+            # CRITICAL FIX #3: Strategy EXIT intents must have SL/TP (or explicitly null)
+            # For exits, we close at market; SL/TP not needed
             intent = OrderIntent(
                 approved=True,
                 signal_uuid=signal.signal_uuid,
@@ -551,6 +568,9 @@ class TradingEngine:
                 direction="SELL" if current_position.side == "LONG" else "BUY",
                 quantity=current_position.quantity,
                 entry_price=candle.close,
+                stop_loss_price=None,  # Exits close at market
+                tp1_price=None,
+                tp2_price=None,
             )
 
             # Optional: log audit
@@ -688,7 +708,11 @@ class TradingEngine:
         await self.event_bus.publish(decision_event)
 
     async def _execute_exits(self, symbol: str, price: float, timeframe: str | None, high: float | None = None, low: float | None = None, is_raw_tick: bool = False,) -> bool:
-        exits = self.portfolio_manager.check_exits(symbol, price, timeframe or "", high=high, low=low, is_raw_tick=is_raw_tick,)
+        settings = get_settings()
+        exits = self.portfolio_manager.check_exits(
+            symbol, price, timeframe or "", high=high, low=low, is_raw_tick=is_raw_tick,
+            min_holding_time_sec=settings.min_holding_time_sec,
+        )
         self._file_logger.info("check_exits returned %d signals for %s @ %.2f", len(exits), symbol, price)
         if not exits:
             return False
@@ -708,6 +732,9 @@ class TradingEngine:
                 self._file_logger.warning("Skip exit – bad quantity on %s", position.position_uuid)
                 continue
 
+            # CRITICAL FIX #3: Exit intents MUST have SL and TP values (or be nulled together)
+            # For hard stops triggered by check_exits, we close at market (no new SL/TP needed)
+            # But we should NOT create an intent with null SL/TP by default
             intent = OrderIntent(
                 approved=True,
                 signal_uuid=str(uuid.uuid4()),
@@ -715,6 +742,11 @@ class TradingEngine:
                 direction="SELL" if position.side == "LONG" else "BUY",
                 quantity=position.quantity,
                 entry_price=price,
+                # Exit intents close at market; SL/TP for exits are not needed
+                # But we include them for audit trail if available
+                stop_loss_price=None,
+                tp1_price=None,
+                tp2_price=None,
             )
             await self.event_bus.publish(signal)
             await self.event_bus.publish(intent)

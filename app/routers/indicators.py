@@ -59,7 +59,7 @@ async def indicator_history(
 @router.get("/{symbol}/compare", response_model=IndicatorCompareResponse)
 async def compare_indicators(
     symbol: str,
-    timeframes: list[str] = Query(default=["1m", "5m", "1h"]),
+    timeframes: list[str] = Query(default=["1m", "5m"]),
     db: AsyncSession = Depends(get_db),
 ) -> IndicatorCompareResponse:
     snapshots: dict[str, IndicatorSnapshotResponse | None] = {}

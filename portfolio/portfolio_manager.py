@@ -30,11 +30,11 @@ class PortfolioManager:
             self.realized_pnl_total += position.realized_pnl
         return position
 
-    def check_exits(self, symbol: str, current_price: float, timeframe: str = "", high: float | None = None, low: float | None = None, is_raw_tick: bool = False,):
+    def check_exits(self, symbol: str, current_price: float, timeframe: str = "", high: float | None = None, low: float | None = None, is_raw_tick: bool = False, min_holding_time_sec: int = 0):
         self._file_logger.info(
             "CHECK EXITS PORTOFOLIO MANAGER TRIGGERED"
         )
-        return self.position_tracker.check_exits(symbol, current_price, timeframe, high=high, low=low, is_raw_tick=is_raw_tick,)
+        return self.position_tracker.check_exits(symbol, current_price, timeframe, high=high, low=low, is_raw_tick=is_raw_tick, min_holding_time_sec=min_holding_time_sec)
 
     def mark_price(self, symbol: str, price: float) -> None:
         self.prices[symbol] = price

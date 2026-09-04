@@ -64,6 +64,7 @@ class BreakoutStrategy(BaseStrategy):
         kc_lower = getattr(snap, "kc_lower", None)
         bb_upper = getattr(snap, "bb_upper", None)
         atr = getattr(snap, "atr_14", None)
+        vwap = getattr(snap, "vwap", None)
 
         scores = {}
 
@@ -80,11 +81,22 @@ class BreakoutStrategy(BaseStrategy):
         else:
             scores["kc_breakout"] = 0.0
 
-        # 2. ATR regime (higher volatility supports breakout continuation)
-        #    We treat “ATR is meaningful” as a soft positive contribution.
-        #    (You can later normalize against a rolling ATR average if available)
-        if atr is not None and atr > 0:
-            scores["atr_regime"] = 0.4                      # mild positive bias when ATR exists
+        # 2. ATR regime (VOLATILITY-AWARE, not hardcoded!)
+        #    Scale ATR contribution by absolute volatility level.
+        #    ATR/VWAP ratio tells us if current volatility is elevated.
+        #    During high-vol, ATR breakouts are more reliable (+0.6).
+        #    During low-vol, ATR breakouts are weak signals (+0.2).
+        if atr is not None and atr > 0 and vwap is not None and vwap > 0:
+            atr_ratio = atr / vwap
+            # Normalize by reference volatility (e.g., 1% is "normal" for crypto)
+            if atr_ratio > 0.03:        # Very high volatility (>3%)
+                scores["atr_regime"] = 0.6
+            elif atr_ratio > 0.015:     # Elevated volatility (1.5%-3%)
+                scores["atr_regime"] = 0.5
+            elif atr_ratio > 0.008:     # Normal volatility (0.8%-1.5%)
+                scores["atr_regime"] = 0.3
+            else:                        # Low volatility (<0.8%)
+                scores["atr_regime"] = 0.1  # Minimal positive bias, breakout less reliable
         else:
             scores["atr_regime"] = 0.0
 

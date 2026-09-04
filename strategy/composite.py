@@ -80,85 +80,120 @@ class CompositeStrategy(BaseStrategy):
             for sid, sig in child_signals.items()
         }
 
-        # 3. Normalize base weights
-        w_trend = self.strategy_weights.get("trend_following", 0.0)
-        w_rev = self.strategy_weights.get("mean_reversion", 0.0)
-        w_brk = self.strategy_weights.get("breakout", 0.0)
+        # 3. Filter ACTIVE strategies (conviction >= 0.15 threshold)
+        # This prevents silent strategies from diluting high-conviction signals
+        min_conviction_threshold = 0.15
+        active_strategies = {
+            sid: score
+            for sid, score in child_scores.items()
+            if abs(score) >= min_conviction_threshold
+        }
 
-        total_w = w_trend + w_rev + w_brk
-        if total_w > 0:
-            w_trend = (w_trend / total_w) * 0.90
-            w_rev = (w_rev / total_w) * 0.90
-            w_brk = (w_brk / total_w) * 0.90
-
-        size_reduction_flag = False
-
-        # 4. Regime adjustments (continuous multipliers)
-        regime = self.regime_detector.detect(htf)
-        if regime == "HIGH_VOL":
-            w_trend *= 0.6
-            w_rev *= 0.6
-            w_brk *= 0.6
-            size_reduction_flag = True
-        elif regime == "RANGING":
-            w_trend *= 0.5
-
-        # 5. Weighted aggregation
-        final_score = (
-            child_scores.get("trend_following", 0.0) * w_trend
-            + child_scores.get("mean_reversion", 0.0) * w_rev
-            + child_scores.get("breakout", 0.0) * w_brk
+        # Log active strategy decisions for debugging
+        self._file_logger.info(
+            "[ACTIVE_STRATEGIES] %s %s | active=%s | all=%s",
+            ltf.symbol, ltf.timeframe,
+            list(active_strategies.keys()),
+            list(child_scores.keys()),
         )
 
-        # 6. Continuous modifiers
-        # On-chain
-        netflow = getattr(ltf, "exchange_netflow", None)
-        if netflow is not None:
-            if netflow < 0:
-                final_score += 0.10
-            elif netflow > 0:
-                final_score -= 0.10
+        # 4. Detect regime upfront (needed for all paths)
+        regime = self.regime_detector.detect(htf)
 
-        # HTF confluence
-        htf_bias = self._htf_bias(htf)
-        if has_distinct_htf:
-            if htf_bias == "BUY":
-                final_score += 0.15
-            elif htf_bias == "SELL":
-                final_score -= 0.15
-
-        final_score = clamp(final_score)
-
-        # 7. Position-aware decision (EXIT has priority)
-        if position is not None:
-            if position.side == "LONG" and (
-                final_score <= -0.35
-                or child_scores.get("trend_following", 0.0) < -0.40
-            ):
-                direction = "EXIT"
-                confidence = abs(final_score)
-            elif position.side == "SHORT" and (
-                final_score >= 0.35
-                or child_scores.get("trend_following", 0.0) > 0.40
-            ):
-                direction = "EXIT"
-                confidence = abs(final_score)
-            else:
-                direction = "HOLD"
-                confidence = abs(final_score)
+        # 5. If no active strategies, return pure HOLD
+        if not active_strategies:
+            direction = "HOLD"
+            confidence = 0.0
+            final_score = 0.0
         else:
-            # Pure threshold decision
-            if final_score >= self.buy_threshold:
-                direction = "BUY"
-                confidence = abs(final_score)
-            elif final_score <= self.sell_threshold:
-                direction = "SELL"
-                confidence = abs(final_score)
-            else:
-                direction = "HOLD"
-                confidence = abs(final_score)
+            # 6. Reweight among ACTIVE strategies only (they should sum to 1.0)
+            active_weights = {
+                sid: self.strategy_weights.get(sid, 0.0)
+                for sid in active_strategies
+            }
+            total_active_weight = sum(active_weights.values())
 
-        # 8. Logging
+            if total_active_weight <= 0:
+                final_score = 0.0
+            else:
+                # Normalize active weights to 1.0 (not 0.90!)
+                normalized_weights = {
+                    sid: active_weights[sid] / total_active_weight
+                    for sid in active_strategies
+                }
+
+                # 7. Weighted aggregation among active strategies
+                final_score = sum(
+                    active_strategies[sid] * normalized_weights[sid]
+                    for sid in active_strategies
+                )
+            
+            # 8. Regime and modifiers as ADDITIVE OFFSETS (not multiplicative cuts)
+            
+            regime_modifier = 0.0
+            size_reduction_flag = False
+            
+            if regime == "HIGH_VOL":
+                regime_modifier = -0.05  # Slight caution (not 60% cut!)
+                size_reduction_flag = True
+            elif regime == "TRENDING_UP":
+                regime_modifier = +0.10
+            elif regime == "TRENDING_DOWN":
+                regime_modifier = -0.10
+            elif regime == "LOW_VOL_COIL":
+                regime_modifier = +0.05  # Squeeze = energy for breakout
+            # regime == "NEUTRAL": no adjustment (default, was "RANGING" before)
+
+            final_score += regime_modifier
+
+            # 8. HTF confluence as additive modifier
+            htf_bias = self._htf_bias(htf)
+            if has_distinct_htf:
+                if htf_bias == "BUY":
+                    final_score += 0.12
+                elif htf_bias == "SELL":
+                    final_score -= 0.12
+
+            # 9. On-chain modifiers
+            netflow = getattr(ltf, "exchange_netflow", None)
+            if netflow is not None:
+                if netflow < -1000:  # Significant outflow
+                    final_score += 0.08
+                elif netflow > 1000:  # Significant inflow
+                    final_score -= 0.08
+
+            final_score = clamp(final_score)
+
+            # 10. Position-aware decision (EXIT has priority)
+            if position is not None:
+                if position.side == "LONG" and (
+                    final_score <= -0.40
+                    or active_strategies.get("trend_following", 0.0) < -0.40
+                ):
+                    direction = "EXIT"
+                    confidence = abs(final_score)
+                elif position.side == "SHORT" and (
+                    final_score >= 0.40
+                    or active_strategies.get("trend_following", 0.0) > 0.40
+                ):
+                    direction = "EXIT"
+                    confidence = abs(final_score)
+                else:
+                    direction = "HOLD"
+                    confidence = abs(final_score)
+            else:
+                # Pure threshold decision (adjusted to 0.25 from 0.20)
+                if final_score >= 0.25:
+                    direction = "BUY"
+                    confidence = final_score
+                elif final_score <= -0.25:
+                    direction = "SELL"
+                    confidence = abs(final_score)
+                else:
+                    direction = "HOLD"
+                    confidence = abs(final_score)
+
+        # 11. Logging
         score_parts = " | ".join(
             f"{sid}={score:+.3f}" for sid, score in child_scores.items()
         )
@@ -167,28 +202,29 @@ class CompositeStrategy(BaseStrategy):
             ltf.symbol, ltf.timeframe, score_parts,
         )
         self._file_logger.info(
-            "[SCORING] Weighted Score=%+.3f | BUY≥%+.2f | SELL≤%+.2f → %s",
-            final_score, self.buy_threshold, self.sell_threshold, direction,
+            "[SCORING] Final Score=%+.3f | BUY≥0.25 | SELL≤-0.25 → %s (confidence=%.3f)",
+            final_score, direction, confidence,
         )
 
+        # Prepare reasoning dict
         reasoning = {
             "final_score": final_score,
-            "buy_threshold": self.buy_threshold,
-            "sell_threshold": self.sell_threshold,
+            "buy_threshold": 0.25,
+            "sell_threshold": -0.25,
             "child_scores": child_scores,
-            "weights": {
-                "trend_following": w_trend,
-                "mean_reversion": w_rev,
-                "breakout": w_brk,
-            },
-            "regime": regime,
-            "htf_bias": htf_bias,
+            "active_strategies": list(active_strategies.keys()),
+            "regime": regime if not active_strategies else self.regime_detector.detect(htf),
+            "htf_bias": self._htf_bias(htf),
             "components": {
                 sid: sig.confidence for sid, sig in child_signals.items()
             },
         }
-        if size_reduction_flag:
-            reasoning["size_reduction_flag"] = True
+        if active_strategies:
+            normalized_weights_dict = {
+                sid: active_weights[sid] / sum(active_weights.values())
+                for sid in active_strategies
+            }
+            reasoning["normalized_weights"] = normalized_weights_dict
 
         return Signal(
             ltf.symbol,
@@ -198,7 +234,7 @@ class CompositeStrategy(BaseStrategy):
             reasoning,
             self.strategy_id,
             ltf.candle_time,
-            market_regime=regime,
+            market_regime=regime if active_strategies else "NEUTRAL",
         )
 
     # ------------------------------------------------------------------
@@ -206,27 +242,45 @@ class CompositeStrategy(BaseStrategy):
     # ------------------------------------------------------------------
     @staticmethod
     def _signal_to_score(signal: Signal) -> float:
-        """Convert a child Signal into a continuous score in [-1, +1]."""
-        # Prefer explicit continuous score if the child already provides it
+        """
+        Convert a child Signal into a continuous score in [-1, +1].
+        
+        CRITICAL: Preserve confidence magnitude even for HOLD signals.
+        A HOLD with confidence=0.25 means "weak signal" and should not
+        be zeroed out—only signals below 0.15 absolute conviction are filtered.
+        """
+        # Priority 1: Extract explicitly computed final_score from sub-strategy
         if isinstance(signal.reasoning, dict):
             if "final_score" in signal.reasoning:
+                # Sub-strategy already computed signed score (e.g., TrendFollowing)
                 return clamp(float(signal.reasoning["final_score"]))
             if "score" in signal.reasoning:
-                # Older discrete composite style (always positive)
+                # Fallback for older composite style (always positive)
                 raw = float(signal.reasoning["score"])
                 if signal.direction == "SELL":
                     return -raw
                 if signal.direction == "BUY":
                     return raw
-                return 0.0
+                # HOLD with legacy score: preserve sign implicitly
+                return clamp(raw) if signal.direction in ("BUY", "HOLD") else clamp(-raw)
 
-        # Fallback: map discrete direction + confidence
+        # Priority 2: Use direction + confidence to infer signed score
+        # CRITICAL FIX: HOLD signals preserve confidence magnitude!
         conf = float(signal.confidence or 0.0)
+        if conf < 0.001:  # Near-zero: truly indecisive
+            return 0.0
+        
         if signal.direction == "BUY":
-            return clamp(conf)
-        if signal.direction == "SELL":
-            return clamp(-conf)
-        return 0.0
+            return clamp(conf)       # Positive score for bullish
+        elif signal.direction == "SELL":
+            return clamp(-conf)      # Negative score for bearish
+        else:  # HOLD
+            # Preserve magnitude but sign remains ambiguous.
+            # The conviction gate (0.15) will decide if it's active enough.
+            # Return positive (slight bullish lean) for weak HOLD signals,
+            # treating HOLD as "weak BUY" rather than "truly neutral".
+            # This prevents valid-but-weak trend setups from being suppressed.
+            return clamp(conf * 0.5)  # 50% of stated confidence, still directional
 
     @staticmethod
     def _snapshots(

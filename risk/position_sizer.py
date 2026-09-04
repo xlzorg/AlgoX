@@ -16,7 +16,7 @@ class PositionSizer:
     def __init__(
         self,
         max_risk_fraction: float = 0.01,
-        atr_stop_multiplier: float = 1.5,
+        atr_stop_multiplier: float = 2.5,
         max_single_asset_fraction: float = 0.20,  # FIX: sizer owns this limit now
     ) -> None:
         self.max_risk_fraction = max_risk_fraction

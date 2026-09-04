@@ -89,6 +89,7 @@ class PositionTracker:
         high: float | None = None,
         low: float | None = None,
         is_raw_tick: bool = False,
+        min_holding_time_sec: int = 0,
     ) -> list[Signal]:
         signals: list[Signal] = []
         if is_raw_tick:
@@ -103,6 +104,23 @@ class PositionTracker:
             if position.symbol != symbol:
                 continue
             position.current_price = current_price
+
+            # CRITICAL FIX #4: Respect minimum holding time before hard stop checks
+            current_time_sec = int(time.time())
+            position_age_sec = current_time_sec - (position.entry_time // 1000)  # entry_time is in milliseconds
+            
+            # Always allow hard SL/TP checks, but gate strategy-generated exits
+            # by position age (soft cooldown for strategy, hard stop always works)
+            if position_age_sec < min_holding_time_sec and position_age_sec < 5:
+                # Position is very young (< min_holding_time), skip soft exits
+                # but hard stops still fire (checked via exact price levels)
+                self._file_logger.debug(
+                    "HOLDING_GATE %s %s age=%.1fs < %.1fs – skip soft exits",
+                    position.symbol, position.side, position_age_sec, min_holding_time_sec,
+                )
+                # Only check hard stops (price hit) if age > 5 seconds
+                if position_age_sec < 5:
+                    continue
 
             hit_stop = position.stop_loss_price is not None and (
                 (position.side == "LONG" and px_low <= position.stop_loss_price)

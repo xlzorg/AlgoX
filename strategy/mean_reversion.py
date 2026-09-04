@@ -100,10 +100,43 @@ class MeanReversionStrategy(BaseStrategy):
         return scores
 
     def _aggregate(self, scores: dict[str, float]) -> float:
-        # Simple equal-weight for now (can be made configurable later)
+        """
+        Aggregate mean-reversion component scores with indicator-aware weighting.
+        
+        IMPROVED FIX:
+        - Previously: Divided by len(scores)=3 always → ~33% penalty during warmup
+        - Previous patch: Filtered v != 0.0 → Brittle (loses neutral scores)
+        - Current: Use configurable weights, count valid indicators properly
+        
+        Weights reflect indicator reliability:
+        - bb_position: 0.60 (core mean-reversion signal)
+        - rsi: 0.25 (confirmation, but can be noisy)
+        - vwap: 0.15 (weak signal, often at equilibrium)
+        """
         if not scores:
             return 0.0
-        return clamp(sum(scores.values()) / len(scores))
+        
+        # Configurable weights: only count indicators that were computed
+        indicator_weights = {
+            "bb_position": 0.60,
+            "rsi": 0.25,
+            "vwap": 0.15,
+        }
+        
+        total_weight = 0.0
+        weighted_sum = 0.0
+        
+        for indicator_name, score_value in scores.items():
+            weight = indicator_weights.get(indicator_name, 0.0)
+            weighted_sum += score_value * weight
+            total_weight += weight
+        
+        if total_weight <= 0:
+            # No indicators were actually computed (all None during cold-start)
+            return 0.0
+        
+        # Normalize by actual total weight (only indicators that fired)
+        return clamp(weighted_sum / total_weight)
 
     def _decide(self, score: float) -> tuple[str, float]:
         if score >= self.buy_threshold:

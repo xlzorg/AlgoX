@@ -21,12 +21,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("BINANCE_SECRET", "BINANCE_API_SECRET"),
     )
 
+    
+
     coingecko_base_url: str = "https://api.geckoterminal.com/api/v2"
     coingecko_poll_interval: int = 60
     coingecko_rate_limit_per_min: int = 25
 
     symbols: list[str] = ["BTCUSDT"]
-    timeframes: list[str] = ["1m", "5m", "1h"]
+    timeframes: list[str] = ["1m", "5m"]
     primary_tf: str = "1m"
     trigger_tf: str = "1m"
     history_candles: int = 500
@@ -48,7 +50,7 @@ class Settings(BaseSettings):
 
     max_risk_per_trade_pct: float = 0.0125
 
-    atr_stop_multiplier: float = 1.4
+    atr_stop_multiplier: float = 2.5
 
     tp1_r: float = 1.3
     tp2_r: float = 2.3
@@ -62,6 +64,7 @@ class Settings(BaseSettings):
     max_drawdown_pct: float = 0.10
 
     cooldown_after_sl_sec: int = 180
+    min_holding_time_sec: int = 180  # Minimum position age before strategy EXIT signals allowed
     auto_manage_positions: bool = Field(
         default=True,
         validation_alias=AliasChoices("AUTO_MANAGE_POSITIONS", "auto_manage_positions"),
